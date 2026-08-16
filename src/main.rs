@@ -1,9 +1,14 @@
 // Konsol penceresi Windows'ta release build'de açılmasın.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use seven_days_to_backup::core::log;
 use seven_days_to_backup::ui::BackupApp;
 
 fn main() -> eframe::Result {
+    // Tutamaç uygulamanın ömrü boyunca canlı kalmalı: düştüğünde flexi_logger
+    // arabelleği boşaltıp dosyayı kapatır, sonraki kayıtlar diske ulaşmaz.
+    let _logger = log::init();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([900.0, 600.0])
