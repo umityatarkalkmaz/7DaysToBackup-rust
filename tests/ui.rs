@@ -194,17 +194,21 @@ fn backing_up_a_save_writes_a_timestamped_copy() {
     harness.get_by_label("SaveA").click();
     harness.run();
     harness.get_by_label("Yedekle").click();
-    harness.run();
 
-    // İşlem bir çalışan iş parçacığında; sonuç penceresi belirene kadar kare çevir.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Buradan itibaren `run()` değil `step()` kullanılıyor. `run()`, arayüz
+    // yeniden çizim istemeyi bırakana kadar döner ve dört adımda durulmazsa
+    // panikler; ilerleme penceresindeki belirsiz çubuk animasyonlu olduğu için
+    // işlem sürdüğü sürece her karede yeniden çizim ister ve o sınır aşılır.
+    // (Linux'ta yedekleme modal çizilmeye fırsat bulamadan bitiyordu, hata
+    // yalnızca Windows koşucusunda görüldü.)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while harness.query_by_label("Yedekleme başarılı").is_none() {
         assert!(
             std::time::Instant::now() < deadline,
             "yedekleme zamanında bitmedi"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
-        harness.run();
+        harness.step();
     }
 
     let backups: Vec<_> = std::fs::read_dir(&map_dir)
