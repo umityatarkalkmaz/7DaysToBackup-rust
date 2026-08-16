@@ -1,0 +1,130 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      # NOTE: negation ('!foo') is not honoured inside paths-ignore. The Python
+      # repo had '**.txt' with a '!requirements.txt' exception here, which also
+      # matched requirements.txt and made dependency bumps produce no release.
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `asset` is what cargo produces; `release_name` is what it is published
+        # as. They have to differ because Linux and macOS both build a file
+        # literally named `seven-days-to-backup`, and GitHub release asset names
+        # must be unique — in the Python repo one silently replaced the other
+        # and Linux users got no binary at all for a release. The suffix also
+        # tells a downloader which build they are getting.
+        include:
+          - os: ubuntu-latest
+            asset: seven-days-to-backup
+            release_name: 7DaysToBackup-rust-linux
+          - os: windows-latest
+            asset: seven-days-to-backup.exe
+            release_name: 7DaysToBackup-rust-windows.exe
+          - os: macos-latest
+            asset: seven-days-to-backup
+            release_name: 7DaysToBackup-rust-macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The release is only worth publishing if it passes the same gates CI
+      # runs; a push to main triggers both workflows independently.
+      - name: Test
+        run: cargo test --all-features
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage release asset
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "target/release/${{ matrix.asset }}" "out/${{ matrix.release_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: out/${{ matrix.release_name }}
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute release tag
+        id: tag
+        run: echo "TAG_NAME=v$(date +'%Y.%m.%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Show what will be released
+        run: find artifacts -type f -printf '%s\t%p\n' | sort -rn
+
+      # fail_on_unmatched_files below does not protect against two matched files
+      # sharing an asset name — that collision is silent. This check does.
+      - name: Check every platform produced a distinct asset
+        run: |
+          total=$(find artifacts -type f | wc -l)
+          unique=$(find artifacts -type f -printf '%f\n' | sort -u | wc -l)
+          echo "$total file(s), $unique distinct name(s)"
+          if [ "$total" -ne 3 ] || [ "$unique" -ne 3 ]; then
+            echo "::error::Expected 3 files with 3 distinct names; duplicates are"
+            echo "::error::silently dropped when uploaded as release assets."
+            find artifacts -type f -printf '%f\n' | sort | uniq -d
+            exit 1
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+          name: Release ${{ steps.tag.outputs.TAG_NAME }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/7DaysToBackup-rust-linux/7DaysToBackup-rust-linux
+            artifacts/7DaysToBackup-rust-windows.exe/7DaysToBackup-rust-windows.exe
+            artifacts/7DaysToBackup-rust-macos/7DaysToBackup-rust-macos

@@ -2,6 +2,19 @@
 name = "seven-days-to-backup"
 version = "0.1.0"
 edition = "2024"
+description = "7 Days to Die save yedekleme aracı"
+license = "MIT"
+repository = "https://github.com/umityatarkalkmaz/7DaysToBackup-rust"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+# `panic = "abort"` bilerek kullanılmıyor. Abort, panikleyen iş parçacığıyla
+# birlikte tüm uygulamayı öldürür; oysa `task::TaskHandle::poll` çalışan bir
+# işlemin çökmesini yakalayıp kullanıcıya hata olarak gösterebiliyor. Birkaç yüz
+# kilobaytlık ikili boyutu, çöken bir yedeklemeden sonra uygulamanın ayakta
+# kalmasından daha değerli değil.
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
