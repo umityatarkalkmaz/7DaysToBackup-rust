@@ -1,9 +1,7 @@
 // Konsol penceresi Windows'ta release build'de açılmasın.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-
-use app::BackupApp;
+use seven_days_to_backup::ui::BackupApp;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

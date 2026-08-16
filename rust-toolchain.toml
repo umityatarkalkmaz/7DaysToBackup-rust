@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned deliberately. An unpinned toolchain turns a new clippy release into a
+# red build on a commit that changed nothing — the same reason the Python side
+# pins ruff and pytest in its workflow.
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
