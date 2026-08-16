@@ -3096,6 +3096,7 @@ dependencies = [
 name = "seven-days-to-backup"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs",
  "eframe",
  "egui",
