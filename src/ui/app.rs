@@ -18,6 +18,15 @@ use crate::task::{self, Outcome, TaskHandle, TaskKind};
 use crate::ui::settings::{SettingsOutcome, SettingsState};
 use crate::ui::theme;
 
+/// Pencerelerin sabit genişliği.
+///
+/// `set_min_width` yetmiyor: metin daha genişse modal büyümüyor, taşan kısım
+/// kırpılıyordu. `set_width` hem asgariyi hem azamiyi belirlediği için metin
+/// sarmalanıyor. Uygulama başlığı gibi uzun metinler pencerelerden atıldı;
+/// egui modallarında başlık çubuğu yok ve Python'daki `QMessageBox` başlığı da
+/// pencerenin gövdesinde değil, çerçevesinde duruyordu.
+const DIALOG_WIDTH: f32 = 420.0;
+
 /// Onaylandığında çalıştırılacak iş.
 enum PendingAction {
     Delete(PathBuf),
@@ -61,10 +70,17 @@ pub struct BackupApp {
 
 impl BackupApp {
     pub fn new(cc: &CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(theme::dark_visuals());
-
         let config_path = paths::config_file();
         let config = Config::load(&config_path);
+        Self::with_config(&cc.egui_ctx, config, config_path)
+    }
+
+    /// Yapılandırmayı dışarıdan alan kurucu.
+    ///
+    /// Arayüz testleri gerçek kullanıcı dizinine dokunmadan bir örnek
+    /// kurabilsin diye ayrı; `new` bunun gerçek yollarla çağrılan hali.
+    pub fn with_config(ctx: &Context, config: Config, config_path: PathBuf) -> Self {
+        ctx.set_visuals(theme::dark_visuals());
         let lang = Lang::from_code(&config.language);
 
         let mut app = Self {
@@ -405,17 +421,28 @@ impl BackupApp {
         });
 
         ui.add_space(4.0);
+        // Sütunlardaki düğmeler de `vertical_centered_justified` içine alınıyor:
+        // aksi halde tam genişlikte çizilip metinleri sola dayanıyor ve üstteki
+        // iki düğmeyle aynı görünmüyorlar.
         ui.columns(2, |columns| {
-            if columns[0]
-                .add_enabled(has_save, egui::Button::new(strings.export))
-                .clicked()
-            {
+            let mut export_clicked = false;
+            let mut import_clicked = false;
+
+            columns[0].vertical_centered_justified(|ui| {
+                export_clicked = ui
+                    .add_enabled(has_save, egui::Button::new(strings.export))
+                    .clicked();
+            });
+            columns[1].vertical_centered_justified(|ui| {
+                import_clicked = ui
+                    .add_enabled(has_map, egui::Button::new(strings.import))
+                    .clicked();
+            });
+
+            if export_clicked {
                 self.on_export(ctx);
             }
-            if columns[1]
-                .add_enabled(has_map, egui::Button::new(strings.import))
-                .clicked()
-            {
+            if import_clicked {
                 self.on_import(ctx);
             }
         });
@@ -434,12 +461,21 @@ impl BackupApp {
 
         let mut cancel_clicked = false;
         egui::Modal::new(Id::new("progress")).show(ctx, |ui| {
-            ui.set_min_width(320.0);
+            ui.set_width(DIALOG_WIDTH);
             ui.label(text);
             ui.add_space(6.0);
-            ui.add(egui::ProgressBar::new(fraction).show_percentage());
-            if total > 0 {
-                ui.label(RichText::new(format!("{done} / {total}")).weak());
+            match fraction {
+                Some(value) => {
+                    ui.add(egui::ProgressBar::new(value).show_percentage());
+                    if total > 0 {
+                        ui.label(RichText::new(format!("{done} / {total}")).weak());
+                    }
+                }
+                // Henüz tek bir ilerleme mesajı gelmedi; oran bilinmiyor.
+                // Burada %0 çizmek de %100 çizmek kadar yanlış olurdu.
+                None => {
+                    ui.add(egui::ProgressBar::new(0.0).animate(true));
+                }
             }
             // İptal düğmesi yalnızca iptal edilebilir işlemlerde çizilir.
             // Python bunu `dialog.setCancelButton(None)` ile yapıyor ve ayrıca
@@ -475,9 +511,7 @@ impl BackupApp {
             Dialog::Info(text) => {
                 let mut closed = false;
                 egui::Modal::new(Id::new("info")).show(ctx, |ui| {
-                    ui.set_min_width(320.0);
-                    ui.heading(strings.title);
-                    ui.add_space(8.0);
+                    ui.set_width(DIALOG_WIDTH);
                     ui.label(&text);
                     ui.add_space(10.0);
                     closed = ui.button(strings.close).clicked();
@@ -489,7 +523,7 @@ impl BackupApp {
             Dialog::Error(text) => {
                 let mut closed = false;
                 egui::Modal::new(Id::new("error")).show(ctx, |ui| {
-                    ui.set_min_width(320.0);
+                    ui.set_width(DIALOG_WIDTH);
                     ui.heading(RichText::new(strings.error).color(theme::STATUS_TEXT));
                     ui.add_space(8.0);
                     ui.label(&text);
@@ -503,9 +537,7 @@ impl BackupApp {
             Dialog::Confirm { text, action } => {
                 let mut answer = None;
                 egui::Modal::new(Id::new("confirm")).show(ctx, |ui| {
-                    ui.set_min_width(320.0);
-                    ui.heading(strings.title);
-                    ui.add_space(8.0);
+                    ui.set_width(DIALOG_WIDTH);
                     ui.label(&text);
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -574,6 +606,9 @@ impl eframe::App for BackupApp {
             ui.add_space(4.0);
         });
 
+        // Alt paneller eklendikleri sırayla aşağıdan yukarı yığılır: önce
+        // eklenen en altta kalır. Python'un yerleşiminde de durum etiketi en
+        // altta, düğmeler onun üstünde.
         if let Some(status) = self.status.clone() {
             egui::Panel::bottom("status").show(ui, |ui| {
                 ui.add_space(4.0);
@@ -582,11 +617,19 @@ impl eframe::App for BackupApp {
             });
         }
 
+        // Eylem düğmeleri **panel** olarak çiziliyor, merkez panelin içinde
+        // değil. egui panellere alanı merkez panelden önce dağıtır; düğmeler
+        // merkez panelde listelerin altına konduğunda, `auto_shrink([false,
+        // false])` ile çizilen kaydırma alanları bütün dikey alanı yiyor ve
+        // düğmeler pencerenin dışına taşıyordu.
+        egui::Panel::bottom("actions").show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.add_enabled_ui(idle, |ui| self.actions(ui, &ctx));
+            ui.add_space(6.0);
+        });
+
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.add_enabled_ui(idle, |ui| {
-                self.lists(ui);
-                self.actions(ui, &ctx);
-            });
+            ui.add_enabled_ui(idle, |ui| self.lists(ui));
         });
 
         self.show_progress(&ctx);

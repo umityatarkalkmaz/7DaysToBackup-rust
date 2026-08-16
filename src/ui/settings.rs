@@ -7,6 +7,9 @@ use crate::core::config::Config;
 use crate::core::platform;
 use crate::i18n::{Strings, fill1};
 
+/// Ayarlar penceresinin genişliği.
+const WIDTH: f32 = 520.0;
+
 /// Ayarlar penceresinin taslak durumu.
 ///
 /// Değişiklikler doğrudan [`Config`] üzerine değil, buraya yazılır. Kullanıcı
@@ -45,20 +48,26 @@ impl SettingsState {
     ) -> SettingsOutcome {
         let mut outcome = SettingsOutcome::Open;
 
-        ui.set_min_width(460.0);
+        // `set_width` (asgari değil, sabit): yalnızca asgari verildiğinde uzun
+        // Türkçe yardım metni pencereyi büyütmüyor, sağdan kırpılıyordu.
+        ui.set_width(WIDTH);
         ui.heading(strings.settings_title);
         ui.add_space(8.0);
 
         ui.group(|ui| {
+            ui.set_width(ui.available_width());
             ui.label(strings.advanced_settings);
             ui.add_space(4.0);
             ui.label(strings.custom_save_path_label);
 
             ui.horizontal(|ui| {
+                // Genişlik kalan alandan hesaplanıyor: sabit bir değer, iki
+                // düğmenin metni uzadığında (dil değişince) taşmaya yol açar.
+                let buttons = 150.0;
                 ui.add(
                     egui::TextEdit::singleline(&mut self.custom_save_path)
                         .hint_text(strings.custom_save_path_placeholder)
-                        .desired_width(260.0),
+                        .desired_width((ui.available_width() - buttons).max(120.0)),
                 );
 
                 if ui.button("...").clicked()

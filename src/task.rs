@@ -91,6 +91,8 @@ pub struct TaskHandle {
     cancellable: bool,
     done: u64,
     total: u64,
+    /// En az bir ilerleme mesajı geldi mi. Bkz. [`TaskHandle::fraction`].
+    reported: bool,
     settled: bool,
 }
 
@@ -114,15 +116,23 @@ impl TaskHandle {
         (self.done, self.total)
     }
 
-    /// İlerleme çubuğu için 0.0–1.0 arası oran.
+    /// İlerleme çubuğu için 0.0–1.0 arası oran; henüz bilinmiyorsa `None`.
     ///
-    /// Toplam sıfırsa (boş bir save) 1.0 döner — Python'un
+    /// `None` ile `Some(1.0)` ayrımı önemli. Tek bir `f32` döndürüldüğünde,
+    /// ilk ilerleme mesajı gelmeden önce `total` sıfır oluyor ve "boş save,
+    /// yani bitti" kuralı devreye girip çubuğu daha işin başında **%100**
+    /// gösteriyordu. Arayüz `None` gördüğünde belirsiz bir gösterge çizer.
+    ///
+    /// Toplam gerçekten sıfırsa (boş bir save) 1.0 döner — Python'un
     /// `int(done / total * 100) if total else 100` ifadesiyle aynı karar.
-    pub fn fraction(&self) -> f32 {
-        if self.total == 0 {
-            return 1.0;
+    pub fn fraction(&self) -> Option<f32> {
+        if !self.reported {
+            return None;
         }
-        (self.done as f32 / self.total as f32).clamp(0.0, 1.0)
+        if self.total == 0 {
+            return Some(1.0);
+        }
+        Some((self.done as f32 / self.total as f32).clamp(0.0, 1.0))
     }
 
     /// Kanalı boşaltır; işlem bittiyse sonucunu döndürür.
@@ -137,6 +147,7 @@ impl TaskHandle {
                 Ok(TaskEvent::Progress { done, total }) => {
                     self.done = done;
                     self.total = total;
+                    self.reported = true;
                 }
                 Ok(TaskEvent::Finished) => return self.settle(Outcome::Success(self.kind)),
                 Ok(TaskEvent::Cancelled) => return self.settle(Outcome::Cancelled),
@@ -198,6 +209,7 @@ where
         cancellable,
         done: 0,
         total: 0,
+        reported: false,
         settled: false,
     }
 }
@@ -325,6 +337,7 @@ mod tests {
             cancellable: true,
             done: 0,
             total: 0,
+            reported: false,
             settled: false,
         };
 
@@ -339,13 +352,19 @@ mod tests {
     }
 
     #[test]
-    fn fraction_treats_an_empty_total_as_complete() {
+    fn fraction_is_unknown_until_the_first_report() {
+        // Regresyon: tek bir `f32` döndürüldüğünde ilk mesaj gelmeden `total`
+        // sıfır oluyor, "boş save" kuralı devreye giriyor ve ilerleme çubuğu
+        // işin daha başında %100 gösteriyordu.
         let mut handle = spawn(TaskKind::Backup, true, silent(), |_sink| Ok(()));
-        assert_eq!(handle.fraction(), 1.0);
+        assert_eq!(handle.fraction(), None);
+
+        handle.reported = true;
+        assert_eq!(handle.fraction(), Some(1.0), "boş save tamamlanmış sayılır");
 
         handle.done = 1;
         handle.total = 4;
-        assert_eq!(handle.fraction(), 0.25);
+        assert_eq!(handle.fraction(), Some(0.25));
     }
 
     #[test]

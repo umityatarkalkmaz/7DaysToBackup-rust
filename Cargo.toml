@@ -32,3 +32,10 @@ tempfile = "3.27.0"
 thiserror = "2.0.20"
 walkdir = "2.5.0"
 zip = "8.6.0"
+
+[dev-dependencies]
+# Arayüz testleri accesskit ağacı üzerinden çalışır; render gerekmez.
+# Ekran görüntüsü almak için geçici olarak "wgpu" ve "snapshot" özelliklerini
+# ekleyip `Harness::builder().wgpu()` ile kurun — CI'da her koşuda wgpu
+# derlemeye değmeyecek kadar ağırlar.
+egui_kittest = { version = "0.36.1", features = ["eframe"] }
