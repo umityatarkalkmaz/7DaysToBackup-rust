@@ -1,12 +1,10 @@
 # 7 Days To Backup (Rust)
 
-[7DaysToBackup](https://github.com/umityatarkalkmaz/7DaysToBackup) aracının Rust ile
-yeniden yazımı. 7 Days to Die save dosyalarını yedekleme, dışa aktarma, içe aktarma
-ve silme işlemlerini tek bir masaüstü arayüzünden yapar.
+7 Days to Die save dosyalarını yedekleme, dışa aktarma, içe aktarma ve silme
+işlemlerini tek bir masaüstü arayüzünden yapar.
 
-Python sürümü PySide6 kullanıyor; bu sürüm [egui/eframe](https://github.com/emilk/egui)
-ile yazıldı. Çıktı, hedef makinede Python, Qt veya webview gerektirmeyen tek bir
-çalıştırılabilir dosya.
+Rust ve [egui/eframe](https://github.com/emilk/egui) ile yazıldı. Çıktı, hedef
+makinede hiçbir çalışma zamanı gerektirmeyen tek bir çalıştırılabilir dosya.
 
 ## Özellikler
 
@@ -108,44 +106,31 @@ Ayarlar ve günlükler:
 
 Ayrıntılı günlük için `SEVENDAYS_DEBUG=1` ile çalıştırın.
 
-## Python sürümüyle farklar
+## Davranış notları
 
-Davranışın büyük kısmı birebir aynı. Bilinçli olarak ayrılan yerler:
+Şaşırtabilecek ya da bilinçli olarak seçilmiş kararlar:
 
-- **Ayarlar ayrı dizinde.** İki sürüm yan yana kurulabilsin diye Rust sürümü
-  `7DaysToBackup-rust` klasörünü kullanır. Özel save yolunu bir kez daha
-  girmeniz gerekir.
-- **Hedefin dışına yazmaya çalışan zip reddedilir.** Python'un kullandığı
-  `zipfile`, yol içindeki `..` bileşenlerini sessizce kırpıp dosyayı hedefin
-  içine düşürüyordu. Burada arşiv reddedilir ve neden söylenir.
-- **Yarıda kalan içe aktarma geri alınır.** Python yarım açılmış dosyaları
-  bırakıyordu.
-- **Çakışan yedek adı bozulmaz.** `os.path.splitext` son noktadan böldüğü için
-  Python `SaveA_backup_2026.08.16-14.30_2.00` gibi bir ad üretebiliyordu.
-- **Save listesi dizinlere süzülür.** Python'da map listesi süzülüyor ama save
-  listesi süzülmüyordu; map klasörüne düşmüş başıboş bir dosya save gibi
-  görünüyordu.
-- **Seçim işlem sonrası korunur.** Python her işlemden sonra listeyi yenileyip
-  seçimi düşürüyordu.
-- **Yedekler save listesinden ayrıldı.** İki sürümde de yedekler save'lerle aynı
-  klasöre yazılıyor (oyun onları ayrı bir save olarak açabilsin diye), ama Python
-  onları save listesinde de gösteriyordu; yedeğin yedeğini almak mümkündü. Burada
-  yedekler kendi geçmiş sütununda, tarihleriyle listeleniyor.
-- **Otomatik yedekleme var.** Ayarlanan aralıkta, seçili save'in yedeği alınır ve
-  geçmiş belirlediğiniz sayıya budanır. Uygulama açıkken çalışır; elle
-  başlattığınız bir işlem sürerken tur atlanır ve sonucu pencere açmadan durum
-  satırına yazar — oyun oynarken önünüze pencere çıkmaz.
-- **Geri yükleme var ve yıkıcı değil.** Python'da yedeği geri almanın yolu
-  klasörleri elle taşımaktı. Burada bir düğme; save'in o anki hâli silinmiyor,
-  yeni bir yedeğe dönüştürülüyor, dolayısıyla yanlış yedeği seçmek veri
-  kaybettirmiyor.
-- **Yalnızca deflate ile sıkıştırılmış zip'ler açılabilir.** İki sürüm de deflate
-  yazıyor, dolayısıyla aralarındaki uyum bozulmuyor. Ama 7-Zip gibi bir araçla
+- **Yedekler save'lerin yanında durur, ama listede karışmaz.** Yedek klasörü
+  save'lerle aynı yere yazılır ki oyun onu ayrı bir save olarak açabilsin;
+  uygulamada kendi geçmiş sütununda, tarihiyle listelenir.
+- **Geri yükleme yıkıcı değildir.** Save'in o anki hâli silinmez, yeni bir yedeğe
+  dönüştürülür. Yanlış yedeği seçmek veri kaybettirmez.
+- **Otomatik yedekleme araya girmez.** Elle başlattığınız bir işlem sürerken tur
+  atlanır ve sonuç pencere açmadan durum satırına yazılır — oyun oynarken
+  önünüze pencere çıkmaz. Geçmiş, belirlediğiniz sayıya budanır.
+- **Seçim işlem sonrası korunur.** Yedekten sonra aynı save'i yeniden seçmeniz
+  gerekmez; silinen bir save seçimden kendiliğinden düşer.
+- **Save listesi yalnızca dizinleri gösterir.** Map klasörüne düşmüş başıboş bir
+  dosya save gibi görünmez.
+- **Hedefin dışına yazmaya çalışan zip reddedilir.** Yol içinde `..` taşıyan bir
+  arşiv sessizce kırpılıp içeri alınmaz; reddedilir ve nedeni söylenir.
+- **Arşiv, bildirdiği boyuttan fazlasını açamaz.** Arşivin kendi beyan ettiği
+  boyut yalan olabilir, o yüzden sınır gerçekten diske yazılan bayt üzerinden de
+  uygulanır.
+- **Yarıda kalan içe aktarma geri alınır.** Yarım açılmış dosyalar geride kalmaz.
+- **Yalnızca deflate ile sıkıştırılmış zip'ler açılabilir.** 7-Zip gibi bir araçla
   LZMA/zstd seçilerek üretilmiş bir arşiv reddedilir. Karşılığında ikili ~1,2 MB
   küçüldü ve arşiv ayrıştıran tek C kütüphanesi (`zstd-sys`) bağımlılıklardan çıktı.
-- **Arşiv, bildirdiği boyuttan fazlasını açamaz.** Python yalnızca arşivin kendi
-  bildirdiği boyuta bakıyordu; o alanı arşivi üreten yazar ve yalan söyleyebilir.
-  Burada sınır, gerçekten diske yazılan bayt üzerinden de uygulanır.
 - **Emoji içeren save adları boş kutu görünür.** İkili boyutunu düşürmek için
   yalnızca tek bir yazı tipi gömülüyor. Türkçe karakterler eksiksiz.
 
@@ -178,8 +163,7 @@ bir SVG aracıyla 16/32/64/128/256/512/1024 boyutlarına verin.
 > vermiyor, orada bir `.desktop` dosyası gerekir. X11, Windows ve macOS'ta görünür.
 
 `core/` ve `task.rs` içinde `egui`/`eframe` importu yoktur; bu sayede iş mantığı
-ekransız test edilebilir. Python tarafında `core/` paketinin Qt'siz tutulmasıyla
-aynı kural.
+ekransız test edilebilir.
 
 ## Lisans
 
