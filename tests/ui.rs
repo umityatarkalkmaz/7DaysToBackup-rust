@@ -64,6 +64,8 @@ fn fixture() -> Fixture {
             // Ölçek sabitleniyor: bu dosyadaki bütün yerleşim iddiaları piksel
             // cinsinden ve otomatik algılama koşucunun monitörüne bağlı olurdu.
             ui_scale: 1.0,
+            // Otomatik yedekleme kapalı: testler zamana bağlı olmamalı.
+            ..Default::default()
         },
         config_path,
         _saves: saves,
@@ -356,6 +358,56 @@ fn a_plain_click_replaces_the_selection() {
     assert!(backups[0].starts_with("SaveA_backup_"));
 }
 
+#[test]
+fn automatic_backup_does_not_fire_before_its_time() {
+    // Tetiklenme yolunun kendisi `app.rs`'teki birim testinde: aralığın alt
+    // sınırı bir dakika ve entegrasyon testinde saati ileri almanın yolu yok.
+    // Burada tutulan, zamanlayıcının erken ateşlememesi ve pencere açmaması.
+    let mut fixture = fixture();
+    fixture.config.auto_backup_minutes = 1;
+    let map_dir = PathBuf::from(&fixture.config.custom_save_path).join("Navezgane");
+
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+    harness.get_by_label("SaveA").click();
+    harness.run();
+
+    // Zamanlayıcı gerçek saate bağlı; bir dakika beklemek yerine `poll_auto_backup`
+    // içindeki koşulun karşılığını doğruluyoruz: hiçbir şey olmadan yedek çıkmamalı.
+    harness.step();
+    let early: Vec<_> = std::fs::read_dir(&map_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("_backup_"))
+        .collect();
+    assert!(early.is_empty(), "vakti gelmeden yedek alındı: {early:?}");
+
+    // Ve hiçbir modal açılmamış olmalı.
+    assert!(harness.query_by_label("Kapat").is_none());
+}
+
+#[test]
+fn automatic_backup_stays_off_when_the_interval_is_zero() {
+    let fixture = fixture();
+    assert_eq!(fixture.config.auto_backup_minutes, 0);
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+    harness.get_by_label("SaveA").click();
+    for _ in 0..5 {
+        harness.step();
+    }
+
+    let map_dir = PathBuf::from(&fixture.config.custom_save_path).join("Navezgane");
+    let backups: Vec<_> = std::fs::read_dir(&map_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("_backup_"))
+        .collect();
+    assert!(backups.is_empty(), "kapalıyken yedek alındı: {backups:?}");
+}
+
 // ------------------------------------------------------------------- yedekler
 
 /// Bir save'in yanına, geçerli adlandırmayla sahte bir yedek koyar.
@@ -588,6 +640,7 @@ fn a_missing_saves_folder_reports_itself_without_a_dialog() {
         custom_save_path: missing.to_string_lossy().into_owned(),
         language: "tr".to_string(),
         ui_scale: 1.0,
+        ..Default::default()
     };
     let config_path = config_dir.path().join("config.json");
 

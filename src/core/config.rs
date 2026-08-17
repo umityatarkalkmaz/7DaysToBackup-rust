@@ -30,6 +30,14 @@ pub struct Config {
     ///
     /// **Ham okunmaz** — [`Config::ui_scale`] üzerinden alınır.
     pub ui_scale: f32,
+    /// Otomatik yedekleme aralığı, dakika. `0` = kapalı.
+    ///
+    /// **Ham okunmaz** — [`Config::auto_backup_interval`] üzerinden alınır.
+    pub auto_backup_minutes: u32,
+    /// Otomatik yedeklemenin save başına saklayacağı yedek sayısı. `0` = sınırsız.
+    ///
+    /// **Ham okunmaz** — [`Config::auto_backup_keep`] üzerinden alınır.
+    pub auto_backup_keep: u32,
 }
 
 /// Kabul edilen en küçük ve en büyük arayüz ölçeği.
@@ -38,6 +46,16 @@ pub struct Config {
 /// aralık daha dar, çünkü uçlarda arayüz kullanılamaz hâle geliyor.
 const MIN_UI_SCALE: f32 = 0.5;
 const MAX_UI_SCALE: f32 = 3.0;
+
+/// Otomatik yedekleme aralığının sınırları, dakika.
+///
+/// Alt sınır 1: dakikadan sık yedek almak diski doldurur ve oyunu yavaşlatır.
+/// Üst sınır bir gün: daha seyreği "kapalı" demenin dolambaçlı yolu.
+const MIN_AUTO_BACKUP_MINUTES: u32 = 1;
+const MAX_AUTO_BACKUP_MINUTES: u32 = 24 * 60;
+
+/// Saklanabilecek en fazla yedek. Sınırsız için alan `0` bırakılır.
+const MAX_AUTO_BACKUP_KEEP: u32 = 100;
 
 impl Config {
     /// Doğrulanmış arayüz ölçeği; otomatik moddaysa `None`.
@@ -53,6 +71,29 @@ impl Config {
             return None;
         }
         Some(self.ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE))
+    }
+
+    /// Doğrulanmış otomatik yedekleme aralığı; kapalıysa `None`.
+    ///
+    /// `ui_scale` ile aynı gerekçe: `config.json` kullanıcı dizininde ve
+    /// bozulması öngörülmüş bir senaryo. Sıfır kapalı demek, geri kalanı
+    /// kullanışlı bir aralığa kırpılıyor.
+    pub fn auto_backup_interval(&self) -> Option<std::time::Duration> {
+        if self.auto_backup_minutes == 0 {
+            return None;
+        }
+        let minutes = self
+            .auto_backup_minutes
+            .clamp(MIN_AUTO_BACKUP_MINUTES, MAX_AUTO_BACKUP_MINUTES);
+        Some(std::time::Duration::from_secs(u64::from(minutes) * 60))
+    }
+
+    /// Save başına saklanacak yedek sayısı; sınırsızsa `None`.
+    pub fn auto_backup_keep(&self) -> Option<usize> {
+        if self.auto_backup_keep == 0 {
+            return None;
+        }
+        Some(self.auto_backup_keep.min(MAX_AUTO_BACKUP_KEEP) as usize)
     }
     /// Ayarları okur. Hiçbir koşulda başarısız olmaz; okunamayan dosya
     /// varsayılanlara düşer.
@@ -208,6 +249,50 @@ mod tests {
 
         let config = Config::load(&path);
         assert_eq!(config.ui_scale(), None);
+    }
+
+    #[test]
+    fn auto_backup_is_off_by_default() {
+        let config = Config::default();
+        assert_eq!(config.auto_backup_interval(), None);
+        assert_eq!(config.auto_backup_keep(), None);
+    }
+
+    #[test]
+    fn an_absurd_auto_backup_interval_is_clamped() {
+        // Saniyede bir yedek diski doldurur; on yılda bir "kapalı" demenin
+        // dolambaçlı yoludur. İkisi de kullanışlı aralığa çekiliyor.
+        let fast = Config {
+            auto_backup_minutes: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            fast.auto_backup_interval(),
+            Some(std::time::Duration::from_secs(60))
+        );
+
+        let slow = Config {
+            auto_backup_minutes: u32::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            slow.auto_backup_interval(),
+            Some(std::time::Duration::from_secs(
+                u64::from(MAX_AUTO_BACKUP_MINUTES) * 60
+            ))
+        );
+    }
+
+    #[test]
+    fn the_retention_count_is_clamped_too() {
+        let config = Config {
+            auto_backup_keep: u32::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            config.auto_backup_keep(),
+            Some(MAX_AUTO_BACKUP_KEEP as usize)
+        );
     }
 
     #[test]

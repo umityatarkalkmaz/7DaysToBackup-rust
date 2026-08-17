@@ -513,6 +513,44 @@ pub fn restore_save(
     Ok(())
 }
 
+/// Bir save'in yedeklerinden en yeni `keep` tanesini bırakır, kalanını siler.
+///
+/// Otomatik yedekleme için: aralıksız çalışan bir zamanlayıcı, budama olmadan
+/// diski doldurur.
+///
+/// Silinen yedek sayısını döndürür. Tek bir yedeğin silinememesi işlemi
+/// düşürmez — budama bir bakım işi, yedeklemenin kendisi değil; hata günlüğe
+/// yazılır ve kalanlarla devam edilir.
+pub fn prune_backups(map_dir: &Path, save: &str, keep: usize) -> Result<usize, OpError> {
+    let entries = fs::read_dir(map_dir).map_err(OpError::io(map_dir))?;
+
+    let mut found: Vec<(PathBuf, BackupName)> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let parsed = parse_backup_name(&name)?;
+            (parsed.save == save).then(|| (entry.path(), parsed))
+        })
+        .collect();
+
+    if found.len() <= keep {
+        return Ok(0);
+    }
+
+    // Yeniden eskiye; baştaki `keep` tanesi kalıyor.
+    found.sort_by_key(|(_, parsed)| std::cmp::Reverse((parsed.taken_at, parsed.counter)));
+
+    let mut removed = 0;
+    for (path, _) in found.into_iter().skip(keep) {
+        match fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(error) => log::warn!("Eski yedek silinemedi {path:?}: {error}"),
+        }
+    }
+    Ok(removed)
+}
+
 /// Bir save dizinini siler.
 ///
 /// Bilerek iptal edilebilir değil: yarıda durmak kısmen silinmiş bir save

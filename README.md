@@ -15,6 +15,7 @@ ile yazıldı. Çıktı, hedef makinede Python, Qt veya webview gerektirmeyen te
 - Onay isteyen silme
 - Yedek geçmişi ve geri yükleme
 - Çoklu save seçimi (Ctrl ile ekle, Shift ile aralık)
+- Otomatik yedekleme (zamanlayıcı ve eski yedekleri budama)
 - Zip'e dışa aktarma (masaüstüne)
 - Zip'ten içe aktarma, çakışma ve boyut denetimiyle
 - İlerleme göstergesi ve iptal
@@ -130,6 +131,10 @@ Davranışın büyük kısmı birebir aynı. Bilinçli olarak ayrılan yerler:
   klasöre yazılıyor (oyun onları ayrı bir save olarak açabilsin diye), ama Python
   onları save listesinde de gösteriyordu; yedeğin yedeğini almak mümkündü. Burada
   yedekler kendi geçmiş sütununda, tarihleriyle listeleniyor.
+- **Otomatik yedekleme var.** Ayarlanan aralıkta, seçili save'in yedeği alınır ve
+  geçmiş belirlediğiniz sayıya budanır. Uygulama açıkken çalışır; elle
+  başlattığınız bir işlem sürerken tur atlanır ve sonucu pencere açmadan durum
+  satırına yazar — oyun oynarken önünüze pencere çıkmaz.
 - **Geri yükleme var ve yıkıcı değil.** Python'da yedeği geri almanın yolu
   klasörleri elle taşımaktı. Burada bir düğme; save'in o anki hâli silinmiyor,
   yeni bir yedeğe dönüştürülüyor, dolayısıyla yanlış yedeği seçmek veri

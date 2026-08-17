@@ -89,6 +89,14 @@ pub struct BackupApp {
     task: Option<TaskHandle>,
     dialog: Option<Dialog>,
 
+    /// Bir sonraki otomatik yedeğin vakti. Kapalıysa `None`.
+    next_auto_backup: Option<std::time::Instant>,
+    /// Şu an çalışan işlem otomatik mi.
+    ///
+    /// Otomatik yedek modal açmıyor: kullanıcı oyun oynarken önüne pencere
+    /// çıkmamalı. Sonuç durum satırına yazılıyor.
+    task_is_automatic: bool,
+
     /// En son dışa aktarmanın hedefi.
     ///
     /// Başarı mesajı dosyanın nereye yazıldığını söylemeli, ama yol işlemin
@@ -126,6 +134,8 @@ impl BackupApp {
             status: None,
             task: None,
             dialog: None,
+            next_auto_backup: None,
+            task_is_automatic: false,
             last_export: None,
         };
         app.rescan_maps();
@@ -332,6 +342,21 @@ impl BackupApp {
         self.rescan_saves();
 
         let strings = self.strings();
+
+        if std::mem::take(&mut self.task_is_automatic) {
+            // Otomatik yedeğin sonucu modal açmaz; hata da açmaz, çünkü oyun
+            // sırasında odak çalmak, kaçırılan bir yedekten daha rahatsız edici.
+            self.status = Some(match outcome {
+                Outcome::Success(_) => fill1(strings.auto_backup_done, now_label()),
+                Outcome::Cancelled => strings.cancelled.to_string(),
+                Outcome::Error(message) => {
+                    log::error!("Otomatik yedekleme başarısız: {message}");
+                    format!("{} {message}", strings.backup_error)
+                }
+            });
+            return;
+        }
+
         self.dialog = Some(match outcome {
             Outcome::Success(TaskKind::Backup) => Dialog::Info(strings.backup_success.to_string()),
             Outcome::Success(TaskKind::Delete) => Dialog::Info(strings.delete_success.to_string()),
@@ -811,6 +836,66 @@ impl BackupApp {
         }
     }
 
+    /// Otomatik yedekleme turunu değerlendirir.
+    ///
+    /// Zamanlayıcı egui'nin kendi mekanizmasıyla: uygulama boştayken kare
+    /// çizilmediği için düz bir sayaç hiç ilerlemezdi. `request_repaint_after`
+    /// vakti geldiğinde bir kare uyandırıyor.
+    fn poll_auto_backup(&mut self, ctx: &Context) {
+        let Some(interval) = self.config.auto_backup_interval() else {
+            self.next_auto_backup = None;
+            return;
+        };
+
+        let now = std::time::Instant::now();
+        let due = *self.next_auto_backup.get_or_insert(now + interval);
+
+        if now < due {
+            ctx.request_repaint_after(due - now);
+            return;
+        }
+
+        // Vakti geldi. Elle başlatılmış bir iş sürüyorsa tur atlanıyor: otomatik
+        // yedek kullanıcının başlattığı işi asla kesmemeli.
+        self.next_auto_backup = Some(now + interval);
+        ctx.request_repaint_after(interval);
+        if self.task.is_some() {
+            return;
+        }
+
+        // Hedef seçili save. Öngörülebilir olsun diye: "en son değişeni bul"
+        // davranışı kullanıcının beklemediği yerde disk doldurur.
+        let (Some(source), Some(save), Some(map)) = (
+            self.selected_save_path(),
+            self.selected_save_name().map(str::to_string),
+            self.selected_map_name().map(str::to_string),
+        ) else {
+            return;
+        };
+
+        let mut name = source.clone().into_os_string();
+        name.push(format!("{}{}", ops::BACKUP_MARKER, ops::timestamp_suffix()));
+        let destination = ops::unique_path(PathBuf::from(name), PathKind::Dir);
+        let map_dir = self.saves_root.join(map);
+        let keep = self.config.auto_backup_keep();
+
+        log::info!("Otomatik yedek {source:?} -> {destination:?}");
+        self.task_is_automatic = true;
+        // İptal edilebilir: kullanıcı ilerleme penceresinden durdurabilmeli.
+        self.start(ctx, TaskKind::Backup, true, move |sink| {
+            ops::copy_save(&source, &destination, sink)?;
+            // Budama yedeğin hemen ardından, aynı iş parçacığında: arayüzün
+            // sırasını beklemesi için bir neden yok ve hata yolu tek yerde kalıyor.
+            if let Some(keep) = keep {
+                let removed = ops::prune_backups(&map_dir, &save, keep)?;
+                if removed > 0 {
+                    log::info!("{removed} eski yedek budandı");
+                }
+            }
+            Ok(())
+        });
+    }
+
     fn run(&mut self, ctx: &Context, action: PendingAction) {
         match action {
             PendingAction::Delete(sources) => {
@@ -843,6 +928,7 @@ impl eframe::App for BackupApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_task();
+        self.poll_auto_backup(&ctx);
 
         // Bir işlem sürerken bütün eylemler kapalı. Python'un
         // `_set_actions_enabled(False)` çağrısının karşılığı, ama tek yerde ve
@@ -938,6 +1024,11 @@ fn message_modal(
 fn wake(ctx: &Context) -> task::Wake {
     let ctx = ctx.clone();
     Arc::new(move || ctx.request_repaint())
+}
+
+/// Durum satırında kullanılan "şu an" etiketi.
+fn now_label() -> String {
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 /// Yedeği listede gösterilecek biçime çevirir.
@@ -1117,6 +1208,92 @@ mod tests {
     fn read_dir_names_is_empty_for_a_missing_directory() {
         let dir = tempfile::tempdir().unwrap();
         assert!(read_dir_names(&dir.path().join("nope")).is_empty());
+    }
+
+    /// Verilen yapılandırmayla, sahte bir save ağacı üzerinde bir uygulama kurar.
+    fn app_with(config_edit: impl FnOnce(&mut Config)) -> (BackupApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let save = dir.path().join("Navezgane").join("SaveA");
+        std::fs::create_dir_all(&save).unwrap();
+        std::fs::write(save.join("player.ttp"), b"x").unwrap();
+
+        let mut config = Config {
+            custom_save_path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        config_edit(&mut config);
+
+        let ctx = Context::default();
+        let app = BackupApp::with_config(&ctx, config, dir.path().join("config.json"));
+        (app, dir)
+    }
+
+    #[test]
+    fn the_automatic_backup_fires_once_its_time_has_come() {
+        // Aralığın alt sınırı bir dakika, dolayısıyla entegrasyon testinde
+        // beklenemez. Burada vakit elle geçmişe alınıyor.
+        let ctx = Context::default();
+        let (mut app, _dir) = app_with(|config| config.auto_backup_minutes = 1);
+        app.selected_map = Some(0);
+        app.rescan_saves();
+        app.selected_saves.insert(0);
+
+        app.next_auto_backup = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        app.poll_auto_backup(&ctx);
+
+        assert!(app.task.is_some(), "otomatik yedek başlamadı");
+        assert!(app.task_is_automatic, "otomatik olarak işaretlenmedi");
+    }
+
+    #[test]
+    fn the_automatic_backup_skips_a_round_while_something_else_runs() {
+        // Kullanıcının başlattığı işi asla kesmemeli.
+        let ctx = Context::default();
+        let (mut app, _dir) = app_with(|config| config.auto_backup_minutes = 1);
+        app.selected_map = Some(0);
+        app.rescan_saves();
+        app.selected_saves.insert(0);
+
+        // Uzun sürecek sahte bir iş.
+        app.task = Some(task::spawn(
+            TaskKind::Export,
+            true,
+            Arc::new(|| {}),
+            |_sink| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                Ok(())
+            },
+        ));
+        app.next_auto_backup = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        app.poll_auto_backup(&ctx);
+
+        assert!(
+            !app.task_is_automatic,
+            "süren işin üstüne otomatik yedek bindi"
+        );
+        // Yine de bir sonraki tura yazılmış olmalı.
+        assert!(app.next_auto_backup.unwrap() > std::time::Instant::now());
+    }
+
+    #[test]
+    fn the_automatic_backup_stays_idle_without_a_selection() {
+        let ctx = Context::default();
+        let (mut app, _dir) = app_with(|config| config.auto_backup_minutes = 1);
+        app.next_auto_backup = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        app.poll_auto_backup(&ctx);
+
+        assert!(app.task.is_none(), "seçim yokken yedek alındı");
+    }
+
+    #[test]
+    fn a_disabled_interval_clears_the_timer() {
+        let ctx = Context::default();
+        let (mut app, _dir) = app_with(|_| {});
+        app.next_auto_backup = Some(std::time::Instant::now());
+        app.poll_auto_backup(&ctx);
+
+        assert_eq!(app.next_auto_backup, None);
+        assert!(app.task.is_none());
     }
 
     #[test]

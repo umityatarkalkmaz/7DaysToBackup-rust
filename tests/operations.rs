@@ -605,6 +605,73 @@ fn a_multi_root_archive_reports_every_conflicting_name() {
     );
 }
 
+// ------------------------------------------------------------------ budama
+
+/// `save` için verilen zaman damgalarıyla yedekler kurar.
+fn seed_backups(map_dir: &Path, save: &str, stamps: &[&str]) {
+    for stamp in stamps {
+        build_save(
+            map_dir,
+            &format!("{save}_backup_{stamp}"),
+            &[("f.txt", b"x")],
+        );
+    }
+}
+
+#[test]
+fn pruning_keeps_the_newest_backups() {
+    let dir = temp();
+    seed_backups(
+        dir.path(),
+        "SaveA",
+        &[
+            "2026.08.14-10.00.00",
+            "2026.08.16-10.00.00",
+            "2026.08.15-10.00.00",
+            "2026.08.13-10.00.00",
+        ],
+    );
+
+    assert_eq!(ops::prune_backups(dir.path(), "SaveA", 2).unwrap(), 2);
+
+    let left: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(left.contains(&"SaveA_backup_2026.08.16-10.00.00".to_string()));
+    assert!(left.contains(&"SaveA_backup_2026.08.15-10.00.00".to_string()));
+    assert_eq!(left.len(), 2, "eskiler silinmedi: {left:?}");
+}
+
+#[test]
+fn pruning_leaves_other_saves_and_real_saves_alone() {
+    let dir = temp();
+    seed_backups(
+        dir.path(),
+        "SaveA",
+        &["2026.08.14-10.00.00", "2026.08.16-10.00.00"],
+    );
+    seed_backups(dir.path(), "SaveB", &["2026.08.10-10.00.00"]);
+    default_save(dir.path(), "SaveA");
+
+    ops::prune_backups(dir.path(), "SaveA", 1).unwrap();
+
+    assert!(dir.path().join("SaveA").is_dir(), "gerçek save silindi");
+    assert!(
+        dir.path().join("SaveB_backup_2026.08.10-10.00.00").is_dir(),
+        "başka save'in yedeği silindi"
+    );
+}
+
+#[test]
+fn pruning_does_nothing_when_there_is_room() {
+    let dir = temp();
+    seed_backups(dir.path(), "SaveA", &["2026.08.16-10.00.00"]);
+    assert_eq!(ops::prune_backups(dir.path(), "SaveA", 5).unwrap(), 0);
+    assert!(dir.path().join("SaveA_backup_2026.08.16-10.00.00").is_dir());
+}
+
 // ------------------------------------------------------------------ yedek adları
 
 #[test]

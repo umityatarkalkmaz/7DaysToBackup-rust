@@ -22,6 +22,10 @@ pub struct SettingsState {
     /// yönetiliyor; kutu işaretliyken değer diske `0.0` olarak yazılır ve
     /// [`Config::ui_scale`] onu otomatik diye okur.
     ui_scale: Option<f32>,
+    /// Otomatik yedekleme aralığı, dakika. 0 = kapalı.
+    auto_backup_minutes: u32,
+    /// Saklanacak yedek sayısı. 0 = sınırsız.
+    auto_backup_keep: u32,
     /// Kaydetme başarısız olduğunda pencerede gösterilen mesaj.
     error: Option<String>,
 }
@@ -42,6 +46,8 @@ impl SettingsState {
         Self {
             custom_save_path: config.custom_save_path.clone(),
             ui_scale: config.ui_scale(),
+            auto_backup_minutes: config.auto_backup_minutes,
+            auto_backup_keep: config.auto_backup_keep,
             error: None,
         }
     }
@@ -92,6 +98,22 @@ impl SettingsState {
 
             ui.add_space(4.0);
             ui.label(egui::RichText::new(strings.custom_save_path_help).weak());
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(strings.auto_backup_label);
+                ui.add(egui::DragValue::new(&mut self.auto_backup_minutes).range(0..=1440));
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(strings.auto_backup_keep_label);
+                ui.add(egui::DragValue::new(&mut self.auto_backup_keep).range(0..=100));
+            });
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(strings.auto_backup_help).weak());
         });
 
         ui.add_space(8.0);
@@ -154,10 +176,18 @@ impl SettingsState {
         let scale = self.ui_scale.unwrap_or(0.0);
         let previous = std::mem::replace(&mut config.custom_save_path, path.clone());
         let previous_scale = std::mem::replace(&mut config.ui_scale, scale);
+        let previous_minutes =
+            std::mem::replace(&mut config.auto_backup_minutes, self.auto_backup_minutes);
+        let previous_keep = std::mem::replace(&mut config.auto_backup_keep, self.auto_backup_keep);
 
         match config.save(config_path) {
             Ok(()) => {
-                log::info!("Ayarlar kaydedildi. custom_save_path={path:?} ui_scale={scale}");
+                log::info!(
+                    "Ayarlar kaydedildi. custom_save_path={path:?} ui_scale={scale} \
+                     auto_backup_minutes={} auto_backup_keep={}",
+                    self.auto_backup_minutes,
+                    self.auto_backup_keep
+                );
                 self.error = None;
                 SettingsOutcome::Saved
             }
@@ -166,6 +196,8 @@ impl SettingsState {
                 // uygulamanın geri kalanında yürürlükte görünmemeli.
                 config.custom_save_path = previous;
                 config.ui_scale = previous_scale;
+                config.auto_backup_minutes = previous_minutes;
+                config.auto_backup_keep = previous_keep;
                 log::error!("Ayarlar kaydedilemedi: {error}");
                 self.error = Some(strings.settings_save_failed.to_string());
                 SettingsOutcome::Open
