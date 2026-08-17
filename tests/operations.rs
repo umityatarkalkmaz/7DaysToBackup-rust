@@ -350,6 +350,49 @@ fn export_import_round_trip() {
 }
 
 #[test]
+fn every_operation_survives_a_path_longer_than_windows_max_path() {
+    // Python deposunun `memory-bank/progress.md` dosyası "çok uzun yol isimleri
+    // Windows'ta sorun çıkarabilir" diye bir bilinen sorun taşıyor. Rust'ın
+    // `std`'si bu konuda Python'un `os` modülünden farklı davranıyor olabilir;
+    // iddia etmek yerine ölçüyoruz. CI zaten Windows'ta koşuyor, sonuç kanıttır.
+    //
+    // Bir save'in gerçekten böyle derinleşmesi olası değil, ama uzun map ve save
+    // adları + derin bölge klasörleri toplamda 260'ı aşabilir.
+    let dir = temp();
+
+    // Her biri 60 karakter; dördü 240 eder, geçici dizin öneki üstüne binince
+    // Windows'un MAX_PATH sınırı (260) rahatça aşılır.
+    let deep = vec!["d".repeat(60); 4].join("/");
+    let deep_file = format!("{deep}/r.0.7rg");
+    let source = build_save(
+        dir.path(),
+        "SaveA",
+        &[("player.ttp", b"player-data"), (&deep_file, b"deep")],
+    );
+    let full = source.join(&deep).join("r.0.7rg");
+    assert!(
+        full.to_string_lossy().len() > 260,
+        "test yolu yeterince uzun değil: {}",
+        full.to_string_lossy().len()
+    );
+
+    // 1) Kopyalama
+    let backup = dir.path().join("SaveA_copy");
+    ops::copy_save(&source, &backup, &NoopSink).unwrap();
+    assert_eq!(snapshot(&source), snapshot(&backup));
+
+    // 2) Dışa aktarma
+    let zip_path = dir.path().join("deep.zip");
+    ops::export_save(&source, &zip_path, DEFAULT_COMPRESSION_LEVEL, &NoopSink).unwrap();
+
+    // 3) İçe aktarma
+    let target = dir.path().join("target");
+    fs::create_dir(&target).unwrap();
+    ops::import_save(&zip_path, &target, ops::MAX_EXTRACT_BYTES, &NoopSink).unwrap();
+    assert_eq!(snapshot(&source), snapshot(&target.join("SaveA")));
+}
+
+#[test]
 fn round_trip_is_identical_at_every_compression_level() {
     for level in [1, 6, 9] {
         let dir = temp();
@@ -449,6 +492,91 @@ fn a_declared_size_within_the_limit_is_accepted() {
     fs::create_dir_all(&tight).unwrap();
     let error = ops::import_save(&zip_path, &tight, 7, &NoopSink).unwrap_err();
     assert!(matches!(error, OpError::TooLarge { .. }), "{error}");
+}
+
+// ------------------------------------------------------------------ yedek adları
+
+#[test]
+fn a_backup_name_round_trips_through_the_parser() {
+    let name = format!("SaveA{}{}", ops::BACKUP_MARKER, ops::timestamp_suffix());
+    let parsed = ops::parse_backup_name(&name).expect("kendi ürettiğimiz ad çözülmeli");
+    assert_eq!(parsed.save, "SaveA");
+    assert_eq!(parsed.counter, None);
+}
+
+#[test]
+fn a_backup_name_carries_its_collision_counter() {
+    let parsed = ops::parse_backup_name("SaveA_backup_2026.08.16-14.30.00_2").unwrap();
+    assert_eq!(parsed.save, "SaveA");
+    assert_eq!(parsed.counter, Some(2));
+    assert_eq!(parsed.taken_at.to_string(), "2026-08-16 14:30:00");
+}
+
+#[test]
+fn a_save_that_merely_contains_the_marker_is_not_a_backup() {
+    // Yalnızca `_backup_` aramak, gerçekten böyle adlandırılmış bir save'i yedek
+    // sayardı ve kullanıcının save'i listeden kaybolurdu.
+    for name in [
+        "Kasim_backup_denemesi",
+        "SaveA_backup_",
+        "SaveA_backup_2026.13.45-99.99.99",
+        "_backup_2026.08.16-14.30.00",
+        "SaveA",
+    ] {
+        assert!(
+            ops::parse_backup_name(name).is_none(),
+            "{name:?} yedek sayılmamalıydı"
+        );
+    }
+}
+
+#[test]
+fn the_marker_is_matched_from_the_end() {
+    // Save'in kendi adında da işaret varsa, son eşleşme ayırıcıdır.
+    let parsed = ops::parse_backup_name("A_backup_B_backup_2026.08.16-14.30.00").unwrap();
+    assert_eq!(parsed.save, "A_backup_B");
+}
+
+// -------------------------------------------------------------------- geri yükleme
+
+#[test]
+fn restore_replaces_the_save_and_keeps_the_old_one_as_a_backup() {
+    let dir = temp();
+    let save = build_save(dir.path(), "SaveA", &[("player.ttp", b"yeni")]);
+    let backup = build_save(dir.path(), "SaveA_backup_old", &[("player.ttp", b"eski")]);
+    let safety = dir.path().join("SaveA_backup_2026.08.16-14.30.00");
+
+    ops::restore_save(&backup, &save, &safety, &NoopSink).unwrap();
+
+    // Save artık yedeğin içeriğini taşıyor.
+    assert_eq!(fs::read(save.join("player.ttp")).unwrap(), b"eski");
+    // İşlemden önceki hâl kaybolmadı, yedek olarak duruyor.
+    assert_eq!(fs::read(safety.join("player.ttp")).unwrap(), b"yeni");
+    // Kaynak yedek olduğu gibi kaldı.
+    assert_eq!(fs::read(backup.join("player.ttp")).unwrap(), b"eski");
+}
+
+#[test]
+fn a_failed_restore_puts_the_original_save_back() {
+    // Kopyalama yarıda kesilirse kullanıcı save'siz kalmamalı.
+    let dir = temp();
+    let save = build_save(dir.path(), "SaveA", &[("player.ttp", b"yeni")]);
+    let backup = build_save(
+        dir.path(),
+        "SaveA_backup_old",
+        &[("a.txt", b"1"), ("b.txt", b"2"), ("c.txt", b"3")],
+    );
+    let safety = dir.path().join("SaveA_backup_2026.08.16-14.30.00");
+
+    let error = ops::restore_save(&backup, &save, &safety, &CancelAfter::new(1)).unwrap_err();
+    assert!(matches!(error, OpError::Cancelled), "{error}");
+
+    assert_eq!(
+        fs::read(save.join("player.ttp")).unwrap(),
+        b"yeni",
+        "eski save yerine konmadı"
+    );
+    assert!(!safety.exists(), "güvenlik adı geride kaldı");
 }
 
 // ------------------------------------------------------------- içe aktarma kalkanları

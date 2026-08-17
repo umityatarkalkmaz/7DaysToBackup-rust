@@ -28,6 +28,12 @@ const DIALOG_WIDTH: f32 = 420.0;
 /// Onaylandığında çalıştırılacak iş.
 enum PendingAction {
     Delete(PathBuf),
+    DeleteBackup(PathBuf),
+    /// Geri yükleme: (yedek, save, güvenlik adı).
+    ///
+    /// Güvenlik adı burada hesaplanıyor çünkü onay anındaki zamanı taşıyor;
+    /// kullanıcı pencereyi açık bırakırsa ad kaymasın.
+    Restore(PathBuf, PathBuf, PathBuf),
 }
 
 /// Aynı anda en fazla biri açık olabilen pencereler.
@@ -53,8 +59,18 @@ pub struct BackupApp {
 
     maps: Vec<String>,
     selected_map: Option<usize>,
+    /// Gerçek save'ler — yedekler süzülmüş hâli.
     saves: Vec<String>,
     selected_save: Option<usize>,
+
+    /// Seçili map'in bütün yedekleri; hangi save'e ait olduğu adında.
+    ///
+    /// Yedekler save'lerle aynı klasörde duruyor (oyun onları save olarak
+    /// görebilsin diye), o yüzden tek bir tarama ikisini birden üretiyor.
+    all_backups: Vec<(String, ops::BackupName)>,
+    /// Seçili save'in yedekleri, yeniden eskiye. `all_backups`'ın süzülmüş hâli.
+    backups: Vec<(String, ops::BackupName)>,
+    selected_backup: Option<usize>,
 
     /// Save klasörü bulunamadığında gösterilen açıklama.
     ///
@@ -96,6 +112,9 @@ impl BackupApp {
             selected_map: None,
             saves: Vec::new(),
             selected_save: None,
+            all_backups: Vec::new(),
+            backups: Vec::new(),
+            selected_backup: None,
             status: None,
             task: None,
             dialog: None,
@@ -131,8 +150,11 @@ impl BackupApp {
             ));
             self.maps.clear();
             self.saves.clear();
+            self.all_backups.clear();
+            self.backups.clear();
             self.selected_map = None;
             self.selected_save = None;
+            self.selected_backup = None;
             return;
         }
 
@@ -151,16 +173,65 @@ impl BackupApp {
     pub fn rescan_saves(&mut self) {
         let previous = self.selected_save_name().map(str::to_string);
         self.saves.clear();
+        self.all_backups.clear();
         self.selected_save = None;
 
-        let Some(map) = self.selected_map_name() else {
+        if let Some(map) = self.selected_map_name() {
+            let path = self.saves_root.join(map);
+            if path.is_dir() {
+                // Tek tarama, iki liste: yedekler save'lerle aynı klasörde.
+                for name in read_dir_names(&path) {
+                    match ops::parse_backup_name(&name) {
+                        Some(parsed) => self.all_backups.push((name, parsed)),
+                        None => self.saves.push(name),
+                    }
+                }
+            }
+        }
+
+        self.selected_save = previous.and_then(|name| index_of(&self.saves, &name));
+        self.refresh_backups();
+    }
+
+    /// Seçili save'in yedeklerini süzer ve yeniden eskiye sıralar.
+    ///
+    /// Seçim adıyla korunuyor, save listesindeki kuralın aynısı: bir yedek alınıp
+    /// liste tazelendiğinde kullanıcının seçtiği kayıt altından kaymasın.
+    fn refresh_backups(&mut self) {
+        let previous = self.selected_backup_name().map(str::to_string);
+        self.backups.clear();
+        self.selected_backup = None;
+
+        let Some(save) = self.selected_save_name() else {
             return;
         };
-        let path = self.saves_root.join(map);
-        if path.is_dir() {
-            self.saves = read_dir_names(&path);
-        }
-        self.selected_save = previous.and_then(|name| index_of(&self.saves, &name));
+        self.backups = self
+            .all_backups
+            .iter()
+            .filter(|(_, parsed)| parsed.save == save)
+            .cloned()
+            .collect();
+        // Yeniden eskiye: en son alınan yedek en üstte.
+        self.backups
+            .sort_by_key(|(_, parsed)| std::cmp::Reverse(parsed.taken_at));
+
+        self.selected_backup = previous.and_then(|name| {
+            self.backups
+                .iter()
+                .position(|(dir_name, _)| *dir_name == name)
+        });
+    }
+
+    fn selected_backup_name(&self) -> Option<&str> {
+        self.selected_backup
+            .and_then(|index| self.backups.get(index))
+            .map(|(dir_name, _)| dir_name.as_str())
+    }
+
+    /// Seçili yedeğin tam yolu.
+    fn selected_backup_path(&self) -> Option<PathBuf> {
+        let map = self.selected_map_name()?;
+        Some(self.saves_root.join(map).join(self.selected_backup_name()?))
     }
 
     fn selected_map_name(&self) -> Option<&str> {
@@ -191,6 +262,7 @@ impl BackupApp {
             TaskKind::Delete => strings.delete_progress,
             TaskKind::Export => strings.export_progress,
             TaskKind::Import => strings.import_progress,
+            TaskKind::Restore => strings.restore_progress,
         }
     }
 
@@ -201,6 +273,7 @@ impl BackupApp {
             TaskKind::Delete => strings.delete_error,
             TaskKind::Export => strings.export_error,
             TaskKind::Import => strings.import_error,
+            TaskKind::Restore => strings.restore_error,
         }
     }
 
@@ -216,6 +289,8 @@ impl BackupApp {
         let kind = handle.kind();
 
         self.task = None;
+        // Yedekler save listesiyle aynı klasörden geliyor; tek tarama ikisini de
+        // tazeliyor. Geri yükleme ve yedek silme sonrası geçmiş güncel olmalı.
         self.rescan_saves();
 
         let strings = self.strings();
@@ -227,6 +302,9 @@ impl BackupApp {
                 None => fill1(strings.export_success, ""),
             }),
             Outcome::Success(TaskKind::Import) => Dialog::Info(strings.import_success.to_string()),
+            Outcome::Success(TaskKind::Restore) => {
+                Dialog::Info(strings.restore_success.to_string())
+            }
             Outcome::Cancelled => Dialog::Info(strings.cancelled.to_string()),
             Outcome::Error(message) => {
                 log::error!("{}: {message}", self.error_text(kind));
@@ -390,24 +468,51 @@ impl BackupApp {
         let strings = self.strings();
         let mut map_changed = false;
 
-        ui.columns(2, |columns| {
+        let mut save_changed = false;
+
+        // Yedek geçmişi kendi sütununda: yedekler save'lerle aynı klasörde
+        // durduğu için eskiden save listesinde karışık görünüyorlardı ve
+        // kullanıcı bir yedeğin yedeğini alabiliyordu.
+        ui.columns(3, |columns| {
             columns[0].label(strings.map_list);
             let before = self.selected_map;
             selectable_list(&mut columns[0], "maps", &self.maps, &mut self.selected_map);
             map_changed = before != self.selected_map;
 
             columns[1].label(strings.save_list);
+            let before = self.selected_save;
             selectable_list(
                 &mut columns[1],
                 "saves",
                 &self.saves,
                 &mut self.selected_save,
             );
+            save_changed = before != self.selected_save;
+
+            columns[2].label(strings.backup_list);
+            if self.backups.is_empty() {
+                empty_list(&mut columns[2], strings.no_backups);
+            } else {
+                let labels: Vec<String> = self
+                    .backups
+                    .iter()
+                    .map(|(_, parsed)| format_backup(parsed))
+                    .collect();
+                selectable_list(
+                    &mut columns[2],
+                    "backups",
+                    &labels,
+                    &mut self.selected_backup,
+                );
+            }
         });
 
         if map_changed {
             self.selected_save = None;
             self.rescan_saves();
+        } else if save_changed {
+            // Yalnızca süzme değişti; diske gitmeye gerek yok.
+            self.refresh_backups();
         }
     }
 
@@ -458,6 +563,79 @@ impl BackupApp {
             if import_clicked {
                 self.on_import(ctx);
             }
+        });
+
+        ui.add_space(4.0);
+        let has_backup = self.selected_backup_name().is_some();
+        ui.columns(2, |columns| {
+            let mut restore_clicked = false;
+            let mut delete_backup_clicked = false;
+
+            columns[0].vertical_centered_justified(|ui| {
+                restore_clicked = ui
+                    .add_enabled(has_backup, egui::Button::new(strings.restore))
+                    .clicked();
+            });
+            columns[1].vertical_centered_justified(|ui| {
+                delete_backup_clicked = ui
+                    .add_enabled(has_backup, egui::Button::new(strings.delete_backup))
+                    .clicked();
+            });
+
+            if restore_clicked {
+                self.on_restore();
+            }
+            if delete_backup_clicked {
+                self.on_delete_backup();
+            }
+        });
+    }
+
+    /// Seçili yedeği save'in üzerine geri yükler — onaydan sonra.
+    fn on_restore(&mut self) {
+        let (Some(backup), Some(save)) = (self.selected_backup_path(), self.selected_save_path())
+        else {
+            self.dialog = Some(Dialog::Error(
+                self.strings().backup_selection_error.to_string(),
+            ));
+            return;
+        };
+
+        // Save'in şu anki hâlinin taşınacağı ad. Normal yedek adlandırması
+        // kullanılıyor ki geçmişte sıradan bir kayıt olarak görünsün.
+        let mut safety = save.clone().into_os_string();
+        safety.push(format!("{}{}", ops::BACKUP_MARKER, ops::timestamp_suffix()));
+        let safety = ops::unique_path(PathBuf::from(safety), PathKind::Dir);
+
+        let label = self
+            .selected_backup
+            .and_then(|index| self.backups.get(index))
+            .map(|(_, parsed)| format_backup(parsed))
+            .unwrap_or_default();
+
+        self.dialog = Some(Dialog::Confirm {
+            text: fill1(self.strings().restore_confirm, label),
+            action: PendingAction::Restore(backup, save, safety),
+        });
+    }
+
+    /// Seçili yedeği siler — onaydan sonra.
+    fn on_delete_backup(&mut self) {
+        let Some(backup) = self.selected_backup_path() else {
+            self.dialog = Some(Dialog::Error(
+                self.strings().backup_selection_error.to_string(),
+            ));
+            return;
+        };
+        let label = self
+            .selected_backup
+            .and_then(|index| self.backups.get(index))
+            .map(|(_, parsed)| format_backup(parsed))
+            .unwrap_or_default();
+
+        self.dialog = Some(Dialog::Confirm {
+            text: fill1(self.strings().delete_backup_confirm, label),
+            action: PendingAction::DeleteBackup(backup),
         });
     }
 
@@ -587,6 +765,20 @@ impl BackupApp {
                     ops::delete_save(&source, sink)
                 });
             }
+            PendingAction::DeleteBackup(source) => {
+                log::info!("Yedek sil {source:?}");
+                self.start(ctx, TaskKind::Delete, false, move |sink| {
+                    ops::delete_save(&source, sink)
+                });
+            }
+            PendingAction::Restore(backup, save, safety) => {
+                log::info!("Geri yükle {backup:?} -> {save:?} (önceki hâl {safety:?})");
+                // İptal edilebilir: `restore_save` yarıda kesilirse eski save'i
+                // yerine koyuyor, dolayısıyla iptal veri kaybettirmiyor.
+                self.start(ctx, TaskKind::Restore, true, move |sink| {
+                    ops::restore_save(&backup, &save, &safety, sink)
+                });
+            }
         }
     }
 }
@@ -690,6 +882,34 @@ fn message_modal(
 fn wake(ctx: &Context) -> task::Wake {
     let ctx = ctx.clone();
     Arc::new(move || ctx.request_repaint())
+}
+
+/// Yedeği listede gösterilecek biçime çevirir.
+///
+/// Klasör adı değil tarih gösteriliyor: `SaveA_backup_2026.08.16-14.30.00`
+/// kullanıcıya hiçbir şey anlatmıyor, "16.08.2026 14:30:00" anlatıyor. Aynı
+/// saniyedeki ikinci yedek sayacıyla ayrılır.
+fn format_backup(parsed: &ops::BackupName) -> String {
+    let stamp = parsed.taken_at.format("%d.%m.%Y %H:%M:%S");
+    match parsed.counter {
+        Some(counter) => format!("{stamp} ({counter})"),
+        None => stamp.to_string(),
+    }
+}
+
+/// Boş bir liste yerine açıklama çizer.
+///
+/// Boş bir çerçeve "yükleniyor mu, bozuk mu" sorusunu bıraktığı için tercih
+/// edilmedi.
+fn empty_list(ui: &mut Ui, text: &str) {
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .inner_margin(4.0)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_min_height(ui.available_height());
+            ui.label(RichText::new(text).weak());
+        });
 }
 
 fn index_of(items: &[String], name: &str) -> Option<usize> {

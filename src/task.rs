@@ -38,6 +38,7 @@ pub enum TaskKind {
     Delete,
     Export,
     Import,
+    Restore,
 }
 
 /// Çalışan iş parçacığından arayüze giden mesajlar.

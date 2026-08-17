@@ -49,8 +49,64 @@ impl ProgressSink for NoopSink {
 /// tercih edildi çünkü `time` crate'inin `now_local()` fonksiyonu Unix'te çok
 /// iş parçacıklı süreçlerde `IndeterminateOffset` ile başarısız oluyor — ve bu
 /// uygulama işlemleri çalışan iş parçacıklarında koşturuyor.
+/// Yedek klasörü adında save adını zaman damgasından ayıran işaret.
+pub const BACKUP_MARKER: &str = "_backup_";
+
+/// Zaman damgası biçimi. Üretim ve ayrıştırma tek yerden beslensin diye sabit.
+const TIMESTAMP_FORMAT: &str = "%Y.%m.%d-%H.%M.%S";
+
 pub fn timestamp_suffix() -> String {
-    chrono::Local::now().format("%Y.%m.%d-%H.%M.%S").to_string()
+    chrono::Local::now().format(TIMESTAMP_FORMAT).to_string()
+}
+
+/// Çözümlenmiş bir yedek klasörü adı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupName {
+    /// Yedeği alınan save'in adı.
+    pub save: String,
+    /// Yedeğin alındığı an (yerel saat).
+    pub taken_at: chrono::NaiveDateTime,
+    /// Aynı saniyede ikinci bir yedek alındıysa [`unique_path`]'in eklediği sayaç.
+    pub counter: Option<u64>,
+}
+
+/// `<save>_backup_<zaman damgası>` biçimindeki bir klasör adını çözer.
+///
+/// Yedekler save'lerle aynı klasörde duruyor (oyun onları save olarak görebilsin
+/// ve eski sürümlerin yedekleri öksüz kalmasın diye), dolayısıyla arayüzün
+/// ikisini birbirinden ayırmasının tek yolu ad.
+///
+/// **Zaman damgasının ayrıştırılabilmesi şart.** Yalnızca `_backup_` aramak,
+/// gerçekten `Kasım_backup_denemesi` adını taşıyan bir save'i yedek sayardı ve
+/// kullanıcının save'i listeden kaybolurdu.
+///
+/// Ayırıcı **sondan** aranıyor: `A_backup_B_backup_<damga>` adında save `A_backup_B`'dir.
+pub fn parse_backup_name(dir_name: &str) -> Option<BackupName> {
+    use chrono::NaiveDateTime;
+
+    let (save, rest) = dir_name.rsplit_once(BACKUP_MARKER)?;
+    if save.is_empty() {
+        return None;
+    }
+
+    // Sayaçsız hâl. Zaman damgası `_` içermediği için önce bunu denemek güvenli.
+    if let Ok(taken_at) = NaiveDateTime::parse_from_str(rest, TIMESTAMP_FORMAT) {
+        return Some(BackupName {
+            save: save.to_owned(),
+            taken_at,
+            counter: None,
+        });
+    }
+
+    // `<damga>_<sayaç>` hâli.
+    let (stamp, tail) = rest.rsplit_once('_')?;
+    let counter = tail.parse::<u64>().ok()?;
+    let taken_at = NaiveDateTime::parse_from_str(stamp, TIMESTAMP_FORMAT).ok()?;
+    Some(BackupName {
+        save: save.to_owned(),
+        taken_at,
+        counter: Some(counter),
+    })
 }
 
 /// Bir yolun dizin mi dosya mı olduğu. [`unique_path`] için gerekli.
@@ -334,6 +390,61 @@ pub fn copy_save(
         }
     }
 
+    guard.disarm();
+    Ok(())
+}
+
+/// Geri yükleme yarıda kalırsa eski save'i yerine koyan nöbetçi.
+struct RestoreGuard {
+    save: PathBuf,
+    safety: PathBuf,
+    armed: bool,
+}
+
+impl RestoreGuard {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RestoreGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Yarım kalan kopya silinir, sonra eski save adına geri döner. İkisi de
+        // başarısız olabilir; o durumda kullanıcının verisi hâlâ `safety`
+        // adındaki klasörde duruyor — kayıp yok, yalnızca adı değişik.
+        let _ = fs::remove_dir_all(&self.save);
+        let _ = fs::rename(&self.safety, &self.save);
+    }
+}
+
+/// Bir yedeği save'in üzerine geri yükler.
+///
+/// **Yıkıcı değil.** Mevcut save silinmez; `safety` adına **yeniden adlandırılır**
+/// ve böylece geçmişte yeni bir yedek olarak görünür. Kopyalamak yerine yeniden
+/// adlandırmak anlıktır, diski iki katına çıkarmaz ve başarısızlıkta geri
+/// alınabilir — üç özellik de bir yedekleme aracında kopyalamaya tercih edilir.
+/// `safety` aynı map klasöründe olduğu için yeniden adlandırma hep aynı dosya
+/// sisteminde kalır.
+///
+/// Yanlış yedeği geri yükleyen kullanıcı, işlemden önceki hâle geçmişteki yeni
+/// kayıttan dönebilir.
+pub fn restore_save(
+    backup: &Path,
+    save: &Path,
+    safety: &Path,
+    sink: &dyn ProgressSink,
+) -> Result<(), OpError> {
+    fs::rename(save, safety).map_err(OpError::io(save))?;
+
+    let guard = RestoreGuard {
+        save: save.to_path_buf(),
+        safety: safety.to_path_buf(),
+        armed: true,
+    };
+    copy_save(backup, save, sink)?;
     guard.disarm();
     Ok(())
 }

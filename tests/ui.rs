@@ -19,7 +19,14 @@ const WINDOW: egui::Vec2 = egui::vec2(900.0, 600.0);
 /// veriyor. Düğmeler burada da görünmek zorunda.
 const SMALLEST_WINDOW: egui::Vec2 = egui::vec2(640.0, 420.0);
 
-const ACTION_LABELS: [&str; 4] = ["Yedekle", "Sil", "Dışa Aktar", "İçe Aktar"];
+const ACTION_LABELS: [&str; 6] = [
+    "Yedekle",
+    "Sil",
+    "Dışa Aktar",
+    "İçe Aktar",
+    "Geri Yükle",
+    "Yedeği Sil",
+];
 
 /// İki map ve üç save içeren sahte bir save ağacı.
 fn build_saves(root: &Path) {
@@ -202,6 +209,124 @@ fn the_action_buttons_survive_the_smallest_window_when_scaled_up() {
             node.rect()
         );
     }
+}
+
+#[test]
+fn the_three_lists_sit_side_by_side_without_overlapping() {
+    // Yedek geçmişi üçüncü bir sütun ekledi. Dar pencerede sütunların birbirine
+    // girmediği ve hiçbirinin sıfıra çökmediği burada tutuluyor; ölçek de
+    // hesaba katılıyor çünkü yakınlaştırma nokta uzayını daraltıyor.
+    for size in [WINDOW, SMALLEST_WINDOW, SMALLEST_WINDOW / 1.4] {
+        let fixture = fixture();
+        let harness = harness(&fixture, size);
+
+        let mut previous_right = 0.0_f32;
+        for label in ["Map Listesi", "Save Listesi", "Yedek Geçmişi"] {
+            let rect = harness.get_by_label(label).rect();
+            assert!(
+                rect.min.x >= previous_right,
+                "{size:?}: '{label}' bir öncekinin üstüne biniyor ({rect:?})"
+            );
+            assert!(
+                rect.width() > 40.0,
+                "{size:?}: '{label}' sütunu çökmüş ({rect:?})"
+            );
+            previous_right = rect.max.x;
+        }
+        assert!(
+            previous_right <= size.x,
+            "{size:?}: son sütun pencereden taşıyor ({previous_right})"
+        );
+    }
+}
+
+// ------------------------------------------------------------------- yedekler
+
+/// Bir save'in yanına, geçerli adlandırmayla sahte bir yedek koyar.
+fn add_backup(root: &Path, map: &str, save: &str, stamp: &str) -> PathBuf {
+    let dir = root.join(map).join(format!("{save}_backup_{stamp}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("player.ttp"), b"eski").unwrap();
+    dir
+}
+
+#[test]
+fn backups_do_not_appear_in_the_save_list() {
+    // Yedekler save'lerle aynı klasörde duruyor ve eskiden save listesinde
+    // karışık görünüyorlardı; kullanıcı bir yedeğin yedeğini alabiliyordu.
+    let fixture = fixture();
+    let root = PathBuf::from(&fixture.config.custom_save_path);
+    add_backup(&root, "Navezgane", "SaveA", "2026.08.16-14.30.00");
+
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+
+    assert!(harness.query_by_label("SaveA").is_some());
+    assert!(
+        harness
+            .query_by_label("SaveA_backup_2026.08.16-14.30.00")
+            .is_none(),
+        "yedek save listesine sızdı"
+    );
+}
+
+#[test]
+fn selecting_a_save_shows_its_backups_newest_first() {
+    let fixture = fixture();
+    let root = PathBuf::from(&fixture.config.custom_save_path);
+    add_backup(&root, "Navezgane", "SaveA", "2026.08.16-14.30.00");
+    add_backup(&root, "Navezgane", "SaveA", "2026.08.17-09.00.00");
+    // Başka bir save'in yedeği sızmamalı.
+    add_backup(&root, "Navezgane", "SaveB", "2026.08.15-11.00.00");
+
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+
+    // Save seçilmeden geçmiş boş.
+    assert!(harness.query_by_label("16.08.2026 14:30:00").is_none());
+
+    harness.get_by_label("SaveA").click();
+    harness.run();
+
+    assert!(harness.query_by_label("17.08.2026 09:00:00").is_some());
+    assert!(harness.query_by_label("16.08.2026 14:30:00").is_some());
+    assert!(
+        harness.query_by_label("15.08.2026 11:00:00").is_none(),
+        "başka save'in yedeği listelendi"
+    );
+}
+
+#[test]
+fn restoring_a_backup_asks_first_and_keeps_the_current_state() {
+    let fixture = fixture();
+    let root = PathBuf::from(&fixture.config.custom_save_path);
+    add_backup(&root, "Navezgane", "SaveA", "2026.08.16-14.30.00");
+    let save = root.join("Navezgane").join("SaveA");
+
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+    harness.get_by_label("SaveA").click();
+    harness.run();
+    harness.get_by_label("16.08.2026 14:30:00").click();
+    harness.run();
+    harness.get_by_label("Geri Yükle").click();
+    harness.run();
+
+    assert!(
+        harness.query_by_label("Hayır").is_some(),
+        "onay penceresi açılmadı"
+    );
+    assert!(
+        save.join("player.ttp").is_file(),
+        "onay beklenmeden değişti"
+    );
+
+    harness.get_by_label("Hayır").click();
+    harness.run();
+    assert_eq!(std::fs::read(save.join("player.ttp")).unwrap(), b"player");
 }
 
 // --------------------------------------------------------------------- listeler

@@ -13,6 +13,7 @@ ile yazıldı. Çıktı, hedef makinede Python, Qt veya webview gerektirmeyen te
 - Map ve save listesi
 - Tarih damgalı yedekleme (`SaveA_backup_2026.08.16-14.30.00`)
 - Onay isteyen silme
+- Yedek geçmişi ve geri yükleme
 - Zip'e dışa aktarma (masaüstüne)
 - Zip'ten içe aktarma, çakışma ve boyut denetimiyle
 - İlerleme göstergesi ve iptal
@@ -124,6 +125,14 @@ Davranışın büyük kısmı birebir aynı. Bilinçli olarak ayrılan yerler:
   görünüyordu.
 - **Seçim işlem sonrası korunur.** Python her işlemden sonra listeyi yenileyip
   seçimi düşürüyordu.
+- **Yedekler save listesinden ayrıldı.** İki sürümde de yedekler save'lerle aynı
+  klasöre yazılıyor (oyun onları ayrı bir save olarak açabilsin diye), ama Python
+  onları save listesinde de gösteriyordu; yedeğin yedeğini almak mümkündü. Burada
+  yedekler kendi geçmiş sütununda, tarihleriyle listeleniyor.
+- **Geri yükleme var ve yıkıcı değil.** Python'da yedeği geri almanın yolu
+  klasörleri elle taşımaktı. Burada bir düğme; save'in o anki hâli silinmiyor,
+  yeni bir yedeğe dönüştürülüyor, dolayısıyla yanlış yedeği seçmek veri
+  kaybettirmiyor.
 - **Yalnızca deflate ile sıkıştırılmış zip'ler açılabilir.** İki sürüm de deflate
   yazıyor, dolayısıyla aralarındaki uyum bozulmuyor. Ama 7-Zip gibi bir araçla
   LZMA/zstd seçilerek üretilmiş bir arşiv reddedilir. Karşılığında ikili ~1,2 MB
