@@ -19,8 +19,28 @@ strip = true
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 dirs = "6.0.0"
-eframe = "0.36.1"
-egui = "0.36.1"
+# Varsayılan özellikler bilerek kapalı. eframe'in varsayılanı `glow` **değil**
+# `wgpu`; yani seçim yapılmadığında `wgpu-core` + `wgpu-hal` + `naga` grafiğinin
+# tamamı ikiliye giriyor. Dört düğme ve iki liste çizen bir uygulama için OpenGL
+# 3.3 fazlasıyla yeterli. Ölçüldü: ikili 20.514.536 → 14.969.920 bayt (−%27),
+# temiz release derlemesi 145 s → 105 s, crate 316 → 257.
+#
+# `links` de düşürüldü: bağlantı açma işini `open` crate'i yapıyor.
+# `main.rs` değişmiyor — yalnız `glow` açıkken `Renderer::default()` `Glow` döner.
+eframe = { version = "0.36.1", default-features = false, features = [
+    "accesskit",
+    "glow",
+    "wayland",
+    "x11",
+] }
+# `default_fonts` kapalı: o özellik dört fontu birden gömüyor (Ubuntu-Light
+# 361.676 B, Hack 309.408 B, NotoEmoji 418.804 B, emoji-icon-font 324.132 B) ve
+# hepsi `FontDefinitions::default()` üzerinden canlı kalıyor. Uygulama ne
+# monospace ne emoji kullanıyor; `ui::theme::fonts()` yalnız Ubuntu-Light'ı
+# yüklüyor. Depoya font dosyası eklemeye gerek yok — `epaint_default_fonts` her
+# fontu ayrı `pub const` olarak veriyor, yalnız referanslanan sabit ikiliye giriyor.
+egui = { version = "0.36.1", default-features = false }
+epaint_default_fonts = "0.36.1"
 filetime = "0.2.29"
 flexi_logger = "0.31.10"
 log = "0.4.33"
@@ -31,7 +51,19 @@ serde_json = "1.0.151"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 walkdir = "2.5.0"
-zip = "8.6.0"
+# Yalnız deflate. Varsayılan özellikler aes-crypto, bzip2, deflate64, lzma, ppmd,
+# zstd ve xz'yi de derliyordu; uygulama `CompressionMethod::Deflated` dışında bir
+# şey yazmıyor ve Python sürümüyle karşılıklı uyum da yalnız deflate üzerinden
+# kurulu. Ölçüldü: ikili −1.196.088 bayt, crate 316 → 282.
+#
+# Güvenlik yan faydası: `zstd-sys` grafikten çıkıyor — saldırgan verisi
+# ayrıştıran tek C kütüphanesi oydu (`libbz2-rs-sys` ve `lzma-rust2` Rust'tır).
+#
+# Bedeli: 7-Zip ile LZMA/zstd seçilerek üretilmiş bir arşiv artık açılamaz;
+# sessizce değil, `OpError::Zip` mesajıyla reddedilir.
+zip = { version = "8.6.0", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
 
 [dev-dependencies]
 # Arayüz testleri accesskit ağacı üzerinden çalışır; render gerekmez.
