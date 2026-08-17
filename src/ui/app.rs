@@ -4,14 +4,12 @@
 //! olmadığı için Python'daki `_retranslate_ui()` adımı yok; buna karşılık
 //! "her karede diski tarama" sorumluluğu bize geçiyor (bkz. [`BackupApp::rescan_maps`]).
 
-use eframe::CreationContext;
 use egui::{Context, Id, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::core::config::Config;
 use crate::core::ops::{self, PathKind};
-use crate::core::paths;
 use crate::core::platform;
 use crate::i18n::{Lang, Strings, fill1};
 use crate::task::{self, Outcome, TaskHandle, TaskKind};
@@ -45,6 +43,14 @@ pub struct BackupApp {
     config: Config,
     lang: Lang,
 
+    /// Çözülmüş save kökü.
+    ///
+    /// `platform::saves_path` bir `stat` çağrısı yapıyor (özel yol geçerli mi
+    /// diye) ve boş özel yolda ev dizinini çözüyor; ikisi de çizim yolunda işi
+    /// yok. Değer burada tutulur ve yalnızca tarama anlarında tazelenir —
+    /// listelerin tazelenme kuralının aynısı, bkz. [`BackupApp::rescan_maps`].
+    saves_root: PathBuf,
+
     maps: Vec<String>,
     selected_map: Option<usize>,
     saves: Vec<String>,
@@ -69,21 +75,20 @@ pub struct BackupApp {
 }
 
 impl BackupApp {
-    pub fn new(cc: &CreationContext<'_>) -> Self {
-        let config_path = paths::config_file();
-        let config = Config::load(&config_path);
-        Self::with_config(&cc.egui_ctx, config, config_path)
-    }
-
-    /// Yapılandırmayı dışarıdan alan kurucu.
+    /// Yapılandırmayı dışarıdan alan tek kurucu.
     ///
-    /// Arayüz testleri gerçek kullanıcı dizinine dokunmadan bir örnek
-    /// kurabilsin diye ayrı; `new` bunun gerçek yollarla çağrılan hali.
+    /// Yapılandırmayı kendisi okuyan bir `new(cc)` de vardı; `main` artık dosyayı
+    /// pencere boyutunu belirlemek için zaten okumak zorunda olduğundan ikinci bir
+    /// okuma anlamsızdı. Arayüz testleri de aynı kapıdan giriyor: gerçek kullanıcı
+    /// dizinine hiç dokunulmadan bir örnek kurulabiliyor.
     pub fn with_config(ctx: &Context, config: Config, config_path: PathBuf) -> Self {
+        ctx.set_fonts(theme::fonts());
         ctx.set_visuals(theme::dark_visuals());
+        ctx.set_zoom_factor(config.ui_scale().unwrap_or_else(|| auto_zoom(ctx)));
         let lang = Lang::from_code(&config.language);
 
         let mut app = Self {
+            saves_root: platform::saves_path(&config),
             config_path,
             config,
             lang,
@@ -115,10 +120,15 @@ impl BackupApp {
     /// seçimi ve biten bir işlem.
     pub fn rescan_maps(&mut self) {
         let previous = self.selected_map_name().map(str::to_string);
-        let saves_path = platform::saves_path(&self.config);
+        // Kökü tazeleyen tek yer burası: özel yol değişmiş ya da geçersizleşmiş
+        // olabilir.
+        self.saves_root = platform::saves_path(&self.config);
 
-        if !saves_path.is_dir() {
-            self.status = Some(fill1(self.strings().saves_missing, saves_path.display()));
+        if !self.saves_root.is_dir() {
+            self.status = Some(fill1(
+                self.strings().saves_missing,
+                self.saves_root.display(),
+            ));
             self.maps.clear();
             self.saves.clear();
             self.selected_map = None;
@@ -127,7 +137,7 @@ impl BackupApp {
         }
 
         self.status = None;
-        self.maps = read_dir_names(&saves_path);
+        self.maps = read_dir_names(&self.saves_root);
         self.selected_map = previous.and_then(|name| index_of(&self.maps, &name));
         self.rescan_saves();
     }
@@ -146,7 +156,7 @@ impl BackupApp {
         let Some(map) = self.selected_map_name() else {
             return;
         };
-        let path = platform::saves_path(&self.config).join(map);
+        let path = self.saves_root.join(map);
         if path.is_dir() {
             self.saves = read_dir_names(&path);
         }
@@ -169,7 +179,7 @@ impl BackupApp {
     fn selected_save_path(&self) -> Option<PathBuf> {
         let map = self.selected_map_name()?;
         let save = self.selected_save_name()?;
-        Some(platform::saves_path(&self.config).join(map).join(save))
+        Some(self.saves_root.join(map).join(save))
     }
 
     // ------------------------------------------------------------- işlem metni
@@ -256,7 +266,7 @@ impl BackupApp {
         name.push(format!("_backup_{}", ops::timestamp_suffix()));
         let destination = ops::unique_path(PathBuf::from(name), PathKind::Dir);
 
-        log::info!("Yedek {} -> {}", source.display(), destination.display());
+        log::info!("Yedek {source:?} -> {destination:?}");
         self.start(ctx, TaskKind::Backup, true, move |sink| {
             ops::copy_save(&source, &destination, sink)
         });
@@ -284,7 +294,7 @@ impl BackupApp {
             PathKind::File,
         );
 
-        log::info!("Dışa aktar {} -> {}", source.display(), zip_path.display());
+        log::info!("Dışa aktar {source:?} -> {zip_path:?}");
         self.last_export = Some(zip_path.clone());
         self.start(ctx, TaskKind::Export, true, move |sink| {
             ops::export_save(&source, &zip_path, ops::DEFAULT_COMPRESSION_LEVEL, sink)
@@ -296,7 +306,7 @@ impl BackupApp {
             self.dialog = Some(Dialog::Error(self.strings().selection_error.to_string()));
             return;
         };
-        let target = platform::saves_path(&self.config).join(map);
+        let target = self.saves_root.join(map);
         let strings = self.strings();
 
         let Some(zip_path) = rfd::FileDialog::new()
@@ -329,7 +339,7 @@ impl BackupApp {
             Ok(_) => {}
         }
 
-        log::info!("İçe aktar {} -> {}", zip_path.display(), target.display());
+        log::info!("İçe aktar {zip_path:?} -> {target:?}");
         self.start(ctx, TaskKind::Import, true, move |sink| {
             ops::import_save(&zip_path, &target, ops::MAX_EXTRACT_BYTES, sink)
         });
@@ -369,8 +379,10 @@ impl BackupApp {
         // Yalnızca hata metni dile bağlı olduğu için tazeleniyor; Python burada
         // bütün map listesini yeniden okuyor, buna gerek yok.
         if self.status.is_some() {
-            let saves_path = platform::saves_path(&self.config);
-            self.status = Some(fill1(self.strings().saves_missing, saves_path.display()));
+            self.status = Some(fill1(
+                self.strings().saves_missing,
+                self.saves_root.display(),
+            ));
         }
     }
 
@@ -401,7 +413,8 @@ impl BackupApp {
 
     fn actions(&mut self, ui: &mut Ui, ctx: &Context) {
         let strings = self.strings();
-        let has_save = self.selected_save_path().is_some();
+        // Seçim varsa yol da vardır; düğme durumu için diske gitmeye gerek yok.
+        let has_save = self.selected_save_name().is_some();
         let has_map = self.selected_map_name().is_some();
 
         ui.add_space(4.0);
@@ -509,28 +522,13 @@ impl BackupApp {
 
         match dialog {
             Dialog::Info(text) => {
-                let mut closed = false;
-                egui::Modal::new(Id::new("info")).show(ctx, |ui| {
-                    ui.set_width(DIALOG_WIDTH);
-                    ui.label(&text);
-                    ui.add_space(10.0);
-                    closed = ui.button(strings.close).clicked();
-                });
-                if !closed {
+                if !message_modal(ctx, "info", None, &text, strings.close) {
                     keep = Some(Dialog::Info(text));
                 }
             }
             Dialog::Error(text) => {
-                let mut closed = false;
-                egui::Modal::new(Id::new("error")).show(ctx, |ui| {
-                    ui.set_width(DIALOG_WIDTH);
-                    ui.heading(RichText::new(strings.error).color(theme::STATUS_TEXT));
-                    ui.add_space(8.0);
-                    ui.label(&text);
-                    ui.add_space(10.0);
-                    closed = ui.button(strings.close).clicked();
-                });
-                if !closed {
+                let heading = RichText::new(strings.error).color(theme::STATUS_TEXT);
+                if !message_modal(ctx, "error", Some(heading), &text, strings.close) {
                     keep = Some(Dialog::Error(text));
                 }
             }
@@ -572,6 +570,9 @@ impl BackupApp {
 
         self.dialog = keep;
         if saved {
+            // Ölçek kaydedildikten sonra yürürlüğe girmeli; `set_zoom_factor`
+            // bir sonraki karede etkili oluyor ve yeniden çizim istiyor.
+            ctx.set_zoom_factor(self.config.ui_scale().unwrap_or_else(|| auto_zoom(ctx)));
             self.rescan_maps();
         }
     }
@@ -579,7 +580,7 @@ impl BackupApp {
     fn run(&mut self, ctx: &Context, action: PendingAction) {
         match action {
             PendingAction::Delete(source) => {
-                log::info!("Sil {}", source.display());
+                log::info!("Sil {source:?}");
                 // İptal edilebilir değil: yarıda kesilmiş bir silme, kısmen
                 // silinmiş bir save bırakır.
                 self.start(ctx, TaskKind::Delete, false, move |sink| {
@@ -609,7 +610,9 @@ impl eframe::App for BackupApp {
         // Alt paneller eklendikleri sırayla aşağıdan yukarı yığılır: önce
         // eklenen en altta kalır. Python'un yerleşiminde de durum etiketi en
         // altta, düğmeler onun üstünde.
-        if let Some(status) = self.status.clone() {
+        // `as_deref`, `clone` değil: kapanış `self`'i değil yalnızca dizgeyi
+        // yakalıyor, dolayısıyla kare başına bir `String` ayırması gitmiş oluyor.
+        if let Some(status) = self.status.as_deref() {
             egui::Panel::bottom("status").show(ui, |ui| {
                 ui.add_space(4.0);
                 ui.label(RichText::new(status).color(theme::STATUS_TEXT));
@@ -635,6 +638,52 @@ impl eframe::App for BackupApp {
         self.show_progress(&ctx);
         self.show_dialog(&ctx);
     }
+}
+
+/// Ölçek ayarlanmamışken monitör boyutundan tahmin edilen değer.
+///
+/// egui yazı tipi boyutlarını mantıksal piksel olarak sabitler (gövde 13 px) ve
+/// ölçeği yalnızca pencere yöneticisinden alır. Masaüstü ölçeklemesi %100 olan
+/// 1440p ve üstü panellerde bu, Python/Qt sürümüne göre belirgin biçimde küçük
+/// bir arayüz demek — Qt orada sistem yazı tipi boyutunu da hesaba katıyordu.
+///
+/// Pencere yöneticisi zaten ölçekliyorsa (HiDPI dizüstü, `native` > 1) ikinci kez
+/// büyütmüyoruz: orada metin fiziksel olarak zaten yeterince büyük.
+fn auto_zoom(ctx: &Context) -> f32 {
+    let (monitor, native) = ctx.input(|input| {
+        let viewport = input.viewport();
+        (viewport.monitor_size, viewport.native_pixels_per_point)
+    });
+
+    match monitor {
+        Some(size) if size.y >= 1400.0 && native.unwrap_or(1.0) <= 1.05 => 1.25,
+        _ => 1.0,
+    }
+}
+
+/// Tek düğmeli bir mesaj penceresi çizer; düğmeye basıldıysa `true` döner.
+///
+/// Bilgi ve hata pencereleri başlık satırı dışında birebir aynıydı. Tek yerde
+/// olmaları, genişliğin ve boşlukların ikisinde ayrışmasını da imkânsız kılıyor.
+fn message_modal(
+    ctx: &Context,
+    id: &'static str,
+    heading: Option<RichText>,
+    text: &str,
+    close_label: &str,
+) -> bool {
+    let mut closed = false;
+    egui::Modal::new(Id::new(id)).show(ctx, |ui| {
+        ui.set_width(DIALOG_WIDTH);
+        if let Some(heading) = heading {
+            ui.heading(heading);
+            ui.add_space(8.0);
+        }
+        ui.label(text);
+        ui.add_space(10.0);
+        closed = ui.button(close_label).clicked();
+    });
+    closed
 }
 
 /// Çalışan iş parçacığının arayüzü uyandırması için.
@@ -671,6 +720,11 @@ fn read_dir_names(path: &Path) -> Vec<String> {
 }
 
 fn selectable_list(ui: &mut Ui, id: &str, items: &[String], selected: &mut Option<usize>) {
+    // Satır yüksekliği tema ve ölçekle değiştiği için sabit yazılmıyor.
+    let row_height = ui.text_style_height(&egui::TextStyle::Body)
+        + ui.spacing().button_padding.y * 2.0
+        + ui.spacing().item_spacing.y;
+
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
         .inner_margin(4.0)
@@ -678,11 +732,14 @@ fn selectable_list(ui: &mut Ui, id: &str, items: &[String], selected: &mut Optio
             egui::ScrollArea::vertical()
                 .id_salt(id)
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
+                // `show` değil `show_rows`: `show` görünmeyen satırlar için de
+                // widget kuruyordu. Yüzlerce save'i olan bir haritada bu, her
+                // karede boşa giden iş demek.
+                .show_rows(ui, row_height, items.len(), |ui, range| {
                     ui.set_min_width(ui.available_width());
-                    for (index, item) in items.iter().enumerate() {
+                    for index in range {
                         if ui
-                            .selectable_label(*selected == Some(index), item)
+                            .selectable_label(*selected == Some(index), &items[index])
                             .clicked()
                         {
                             *selected = Some(index);

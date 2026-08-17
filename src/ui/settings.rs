@@ -16,6 +16,12 @@ const WIDTH: f32 = 520.0;
 /// İptal derse hiçbir şey değişmemiş olur.
 pub struct SettingsState {
     custom_save_path: String,
+    /// Taslak arayüz ölçeği. `None` = otomatik.
+    ///
+    /// Kaydırıcı `Option` üzerinde çalışamadığı için ayrı bir onay kutusuyla
+    /// yönetiliyor; kutu işaretliyken değer diske `0.0` olarak yazılır ve
+    /// [`Config::ui_scale`] onu otomatik diye okur.
+    ui_scale: Option<f32>,
     /// Kaydetme başarısız olduğunda pencerede gösterilen mesaj.
     error: Option<String>,
 }
@@ -35,6 +41,7 @@ impl SettingsState {
     pub fn new(config: &Config) -> Self {
         Self {
             custom_save_path: config.custom_save_path.clone(),
+            ui_scale: config.ui_scale(),
             error: None,
         }
     }
@@ -87,6 +94,33 @@ impl SettingsState {
             ui.label(egui::RichText::new(strings.custom_save_path_help).weak());
         });
 
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.label(strings.ui_scale_label);
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                let mut automatic = self.ui_scale.is_none();
+                if ui.checkbox(&mut automatic, strings.ui_scale_auto).changed() {
+                    // Otomatikten çıkarken kaydırıcı, o an geçerli olan ölçekten
+                    // başlasın; 1.0'a atlamak kullanıcıya bir geri adım gibi gelir.
+                    self.ui_scale = if automatic {
+                        None
+                    } else {
+                        Some(ui.ctx().zoom_factor())
+                    };
+                }
+
+                if let Some(scale) = self.ui_scale.as_mut() {
+                    ui.add(egui::Slider::new(scale, 0.75..=2.0).step_by(0.05));
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(strings.ui_scale_help).weak());
+        });
+
         if let Some(error) = &self.error {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(error).color(super::theme::STATUS_TEXT));
@@ -116,11 +150,14 @@ impl SettingsState {
         strings: &Strings,
     ) -> SettingsOutcome {
         let path = self.custom_save_path.trim().to_string();
+        // 0.0 = otomatik; `Config::ui_scale` sözleşmesi bu.
+        let scale = self.ui_scale.unwrap_or(0.0);
         let previous = std::mem::replace(&mut config.custom_save_path, path.clone());
+        let previous_scale = std::mem::replace(&mut config.ui_scale, scale);
 
         match config.save(config_path) {
             Ok(()) => {
-                log::info!("Ayarlar kaydedildi. custom_save_path={path}");
+                log::info!("Ayarlar kaydedildi. custom_save_path={path:?} ui_scale={scale}");
                 self.error = None;
                 SettingsOutcome::Saved
             }
@@ -128,6 +165,7 @@ impl SettingsState {
                 // Bellekteki değeri de geri al: diske gitmeyen bir ayar,
                 // uygulamanın geri kalanında yürürlükte görünmemeli.
                 config.custom_save_path = previous;
+                config.ui_scale = previous_scale;
                 log::error!("Ayarlar kaydedilemedi: {error}");
                 self.error = Some(strings.settings_save_failed.to_string());
                 SettingsOutcome::Open
@@ -148,7 +186,7 @@ impl SettingsState {
         };
 
         if !path.exists() {
-            log::warn!("Klasör açılamadı, yol yok: {}", path.display());
+            log::warn!("Klasör açılamadı, yol yok: {path:?}");
             self.error = Some(fill1(strings.path_not_found, path.display()));
             return;
         }
@@ -157,7 +195,7 @@ impl SettingsState {
         // (xdg-open yok, masaüstü oturumu yok, işletim sistemi reddediyor);
         // hepsi kullanıcıya bildirilir, pencere çökmez.
         match open::that_detached(&path) {
-            Ok(()) => log::info!("Klasör açıldı: {}", path.display()),
+            Ok(()) => log::info!("Klasör açıldı: {path:?}"),
             Err(error) => {
                 log::error!("Klasör açılamadı: {error}");
                 self.error = Some(fill1(strings.open_failed, error));
@@ -176,6 +214,7 @@ mod tests {
         let config = Config {
             custom_save_path: "/tmp/saves".to_string(),
             language: "en".to_string(),
+            ..Default::default()
         };
         assert_eq!(SettingsState::new(&config).custom_save_path, "/tmp/saves");
     }
@@ -205,6 +244,7 @@ mod tests {
         let mut config = Config {
             custom_save_path: "/original".to_string(),
             language: String::new(),
+            ..Default::default()
         };
         let mut state = SettingsState::new(&config);
         state.custom_save_path = "/new".to_string();
@@ -228,6 +268,7 @@ mod tests {
         let mut config = Config {
             custom_save_path: "/tmp/old".to_string(),
             language: String::new(),
+            ..Default::default()
         };
         let mut state = SettingsState::new(&config);
         state.custom_save_path = "   ".to_string();

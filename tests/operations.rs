@@ -123,6 +123,24 @@ fn temp() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
+/// Merkezi dizindeki "uncompressed size" alanını `value` yapar.
+///
+/// Bu alanı arşivi **üreten** yazar; okuyucunun ona güvenmek için bir nedeni yok.
+/// Testin amacı tam olarak bu: küçük boyut bildirip büyük açılan bir arşiv
+/// sınırı atlatamamalı.
+fn forge_declared_size(path: &Path, value: u32) {
+    let mut bytes = fs::read(path).unwrap();
+    // Merkezi dizin girdisi imzası (PK\x01\x02); yerel başlık PK\x03\x04 olduğu
+    // için bu arama yalnızca merkezi dizini bulur.
+    let start = bytes
+        .windows(4)
+        .position(|window| window == [0x50, 0x4b, 0x01, 0x02])
+        .expect("merkezi dizin girdisi bulunmalı");
+    // APPNOTE 4.3.12: girdi başlangıcından 24. bayt, uncompressed size (u32, LE).
+    bytes[start + 24..start + 28].copy_from_slice(&value.to_le_bytes());
+    fs::write(path, bytes).unwrap();
+}
+
 // ------------------------------------------------------------- kopyala / yedekle
 
 #[test]
@@ -414,11 +432,23 @@ fn cancelled_export_removes_the_partial_archive() {
 }
 
 #[test]
-fn archive_uncompressed_size_sums_every_entry() {
+fn a_declared_size_within_the_limit_is_accepted() {
+    // Boyut ön kontrolü artık merkezi dizinden okunuyor (`decompressed_size`),
+    // girdi girdi yerel başlık okuyarak değil. Sınır tam toplama eşitken de
+    // geçmeli: eskiden bunu doğrulayan `archive_uncompressed_size` vardı.
     let dir = temp();
-    let zip_path = make_zip(&dir.path().join("a.zip"), &["a.txt", "b.txt", "c.txt"]);
-    // Her girdi "data" yazıyor: 3 x 4 bayt.
-    assert_eq!(ops::archive_uncompressed_size(&zip_path).unwrap(), 12);
+    let zip_path = make_zip(&dir.path().join("a.zip"), &["SaveA/a.txt", "SaveA/b.txt"]);
+    let target = dir.path().join("maps");
+    fs::create_dir_all(&target).unwrap();
+
+    // Her girdi "data" yazıyor: 2 x 4 bayt.
+    ops::import_save(&zip_path, &target, 8, &NoopSink).unwrap();
+    assert!(target.join("SaveA").join("a.txt").is_file());
+
+    let tight = dir.path().join("tight");
+    fs::create_dir_all(&tight).unwrap();
+    let error = ops::import_save(&zip_path, &tight, 7, &NoopSink).unwrap_err();
+    assert!(matches!(error, OpError::TooLarge { .. }), "{error}");
 }
 
 // ------------------------------------------------------------- içe aktarma kalkanları
@@ -457,6 +487,22 @@ fn conflicts_detects_a_folder_when_the_first_entry_is_a_loose_file() {
 }
 
 #[test]
+fn conflicts_ignores_an_entry_that_escapes_the_target() {
+    // `target_dir.join("..")` her zaman var. Elenmezse hedefin dışına çıkmaya
+    // çalışan her arşiv "çakışma" gibi görünür ve asıl hata (UnsafePath) maskelenir.
+    let dir = temp();
+    let zip_path = make_zip(&dir.path().join("evil.zip"), &["../escaped.txt"]);
+    let target = dir.path().join("maps");
+    fs::create_dir_all(&target).unwrap();
+
+    assert!(
+        ops::archive_conflicts(&zip_path, &target)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn no_conflicts_when_the_target_is_clean() {
     let dir = temp();
     let zip_path = make_zip(&dir.path().join("clean.zip"), &["SaveA/file.txt"]);
@@ -480,6 +526,63 @@ fn import_refuses_an_oversized_archive() {
     let error = ops::import_save(&zip_path, &target, 1, &NoopSink).unwrap_err();
     assert!(matches!(error, OpError::TooLarge { .. }), "{error}");
     assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+}
+
+#[test]
+fn import_stops_an_archive_that_writes_more_than_it_declared() {
+    // Bildirilen boyuta bakan ön kontrol yalnızca dürüst bombaları eler. Asıl
+    // sınır gerçekten yazılan bayt üzerinden uygulanmalı.
+    let dir = temp();
+    let zip_path = dir.path().join("liar.zip");
+    {
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("SaveA/big.bin", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        // 64 KB sıfır; deflate ile birkaç yüz bayta iniyor.
+        writer.write_all(&vec![0u8; 64 * 1024]).unwrap();
+        writer.finish().unwrap();
+    }
+    forge_declared_size(&zip_path, 4);
+
+    let target = dir.path().join("maps");
+    fs::create_dir_all(&target).unwrap();
+
+    // Bildirilen 4 bayt, 1 KB'lık sınırın altında: ön kontrol arşivi geçirir.
+    let error = ops::import_save(&zip_path, &target, 1024, &NoopSink).unwrap_err();
+
+    assert!(
+        matches!(error, OpError::ExtractionExceededLimit { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_dir(&target).unwrap().count(),
+        0,
+        "sınır aşılınca yazılanlar geri alınmalı"
+    );
+}
+
+#[test]
+fn import_refuses_to_overwrite_an_existing_entry_on_its_own() {
+    // `RollbackGuard`'ın güvenliği, çağıranın `archive_conflicts`'i çağırmış
+    // olmasına dayanamaz: kontrolü atlayan bir çağıran, bir hata anında
+    // kullanıcının var olan save'lerinin silinmesine yol açardı.
+    let dir = temp();
+    let zip_path = make_zip(&dir.path().join("clash.zip"), &["SaveA/file.txt"]);
+    let target = dir.path().join("maps");
+    let existing = target.join("SaveA").join("onceki.txt");
+    fs::create_dir_all(existing.parent().unwrap()).unwrap();
+    fs::write(&existing, b"dokunma").unwrap();
+
+    let error =
+        ops::import_save(&zip_path, &target, ops::MAX_EXTRACT_BYTES, &NoopSink).unwrap_err();
+
+    match error {
+        OpError::Conflicts(names) => assert_eq!(names, vec!["SaveA".to_string()]),
+        other => panic!("beklenen Conflicts, gelen: {other:?}"),
+    }
+    assert_eq!(fs::read(&existing).unwrap(), b"dokunma");
 }
 
 #[test]

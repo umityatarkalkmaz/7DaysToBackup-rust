@@ -54,6 +54,9 @@ fn fixture() -> Fixture {
         config: Config {
             custom_save_path: saves.path().to_string_lossy().into_owned(),
             language: "tr".to_string(),
+            // Ölçek sabitleniyor: bu dosyadaki bütün yerleşim iddiaları piksel
+            // cinsinden ve otomatik algılama koşucunun monitörüne bağlı olurdu.
+            ui_scale: 1.0,
         },
         config_path,
         _saves: saves,
@@ -126,6 +129,78 @@ fn both_lists_are_visible_alongside_the_buttons() {
             .query_by_label(label)
             .unwrap_or_else(|| panic!("'{label}' başlığı yok"));
         assert!(bounds.contains_rect(node.rect()), "'{label}' taşıyor");
+    }
+}
+
+// ------------------------------------------------------------------------ ölçek
+
+#[test]
+fn the_configured_ui_scale_reaches_egui() {
+    // 2560x1440 monitörde arayüzün küçük görünmesi bildirilen kusurdu. egui yazı
+    // boyutlarını mantıksal piksel olarak sabitliyor ve masaüstünün yazı tipi
+    // ayarını hiç okumuyor; tek kaldıraç yakınlaştırma katsayısı.
+    //
+    // İddia düğme dikdörtgeni üzerinden kurulamıyor: `egui_kittest` her karede
+    // `screen_rect`'i nokta cinsinden sabitliyor (`egui_kittest/src/lib.rs:231`),
+    // oysa gerçek pencerede yakınlaştırma **nokta uzayını küçültür** ve widget'lar
+    // fiziksel olarak büyür. Nokta uzayı sabitlenince etki gözlemlenemez hâle
+    // geliyor. Bizim sorumluluğumuz değerin egui'ye ulaşması; ondan sonrası
+    // egui'nin kendi davranışı. Yerleşimin dar alanda bozulmadığı ayrı testte.
+    let mut fixture = fixture();
+    fixture.config.ui_scale = 1.5;
+
+    assert_eq!(harness(&fixture, WINDOW).ctx.zoom_factor(), 1.5);
+}
+
+#[test]
+fn an_out_of_range_ui_scale_is_clamped_before_it_reaches_egui() {
+    let mut fixture = fixture();
+    fixture.config.ui_scale = 99.0;
+
+    let zoom = harness(&fixture, WINDOW).ctx.zoom_factor();
+    assert!(zoom <= 3.0, "kırpılmadı: {zoom}");
+}
+
+#[test]
+fn a_hostile_ui_scale_falls_back_instead_of_killing_the_window() {
+    // `config.json` bozulabilir ve `set_zoom_factor` hiçbir doğrulama yapmıyor;
+    // sonsuz bir ölçek arayüz çizilmeden uygulamayı öldürebilirdi.
+    let mut fixture = fixture();
+    fixture.config.ui_scale = f32::INFINITY;
+    let harness = harness(&fixture, WINDOW);
+
+    for label in ACTION_LABELS {
+        assert!(
+            harness.query_by_label(label).is_some(),
+            "'{label}' çizilmedi"
+        );
+    }
+}
+
+#[test]
+fn the_action_buttons_survive_the_smallest_window_when_scaled_up() {
+    // Asgari pencere boyutu ölçekle büyümüyor (bkz. `main.rs`), dolayısıyla
+    // yakınlaştırılmış bir arayüz 640x420 fiziksel pencereye sığmak zorunda.
+    //
+    // Yakınlaştırma nokta uzayını küçültür: 1.25 ölçekte 640x420 piksellik bir
+    // pencere 512x336 **nokta** eder. Harness nokta uzayını sabitlediği için
+    // ölçeği taklit etmenin doğru yolu, pencereyi bölünmüş boyutta kurmak.
+    const SCALE: f32 = 1.25;
+    let scaled_window = SMALLEST_WINDOW / SCALE;
+
+    let fixture = fixture();
+    let harness = harness(&fixture, scaled_window);
+    let bounds = screen(scaled_window);
+
+    for label in ACTION_LABELS {
+        let node = harness
+            .query_by_label(label)
+            .unwrap_or_else(|| panic!("'{label}' düğmesi arayüzde yok"));
+        assert!(
+            bounds.contains_rect(node.rect()),
+            "'{label}' {SCALE} ölçekte asgari pencereden taşıyor: {:?}, alan {bounds:?}",
+            node.rect()
+        );
     }
 }
 
@@ -271,6 +346,7 @@ fn a_missing_saves_folder_reports_itself_without_a_dialog() {
         // etiketinin biçimini doğruluyoruz.
         custom_save_path: missing.to_string_lossy().into_owned(),
         language: "tr".to_string(),
+        ui_scale: 1.0,
     };
     let config_path = config_dir.path().join("config.json");
 

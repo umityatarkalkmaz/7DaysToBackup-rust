@@ -18,6 +18,7 @@ ile yazıldı. Çıktı, hedef makinede Python, Qt veya webview gerektirmeyen te
 - İlerleme göstergesi ve iptal
 - Koyu tema, Türkçe/İngilizce
 - Özel save klasörü ayarı
+- Ayarlanabilir arayüz ölçeği (yüksek çözünürlüklü ekranlar için)
 
 ## Kurulum
 
@@ -63,6 +64,16 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mes
 
 Bulunamazsa Ayarlar penceresinden özel bir konum tanımlayabilirsiniz.
 
+## Arayüz küçük görünüyorsa
+
+egui, masaüstünün yazı tipi boyutunu okumaz; ölçeği yalnızca pencere
+yöneticisinin bildirdiği katsayıdan alır. Masaüstü ölçeklemesi %100 olan 1440p ve
+üstü ekranlarda arayüz bu yüzden küçük kalabilir.
+
+Ayarlar penceresindeki **Arayüz ölçeği** ile büyütebilirsiniz; değer
+`config.json` içinde saklanır. `Ctrl` ve `+`/`-` de çalışır ama kalıcı değildir.
+Ayar boşken uygulama monitör boyutuna bakıp kendisi bir tahmin yapar.
+
 Ayarlar ve günlükler:
 
 | | Windows | macOS | Linux |
@@ -91,12 +102,21 @@ Davranışın büyük kısmı birebir aynı. Bilinçli olarak ayrılan yerler:
   görünüyordu.
 - **Seçim işlem sonrası korunur.** Python her işlemden sonra listeyi yenileyip
   seçimi düşürüyordu.
+- **Yalnızca deflate ile sıkıştırılmış zip'ler açılabilir.** İki sürüm de deflate
+  yazıyor, dolayısıyla aralarındaki uyum bozulmuyor. Ama 7-Zip gibi bir araçla
+  LZMA/zstd seçilerek üretilmiş bir arşiv reddedilir. Karşılığında ikili ~1,2 MB
+  küçüldü ve arşiv ayrıştıran tek C kütüphanesi (`zstd-sys`) bağımlılıklardan çıktı.
+- **Arşiv, bildirdiği boyuttan fazlasını açamaz.** Python yalnızca arşivin kendi
+  bildirdiği boyuta bakıyordu; o alanı arşivi üreten yazar ve yalan söyleyebilir.
+  Burada sınır, gerçekten diske yazılan bayt üzerinden de uygulanır.
+- **Emoji içeren save adları boş kutu görünür.** İkili boyutunu düşürmek için
+  yalnızca tek bir yazı tipi gömülüyor. Türkçe karakterler eksiksiz.
 
 ## Geliştirme
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 

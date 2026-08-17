@@ -13,7 +13,11 @@ pub enum OpError {
     /// Hangi yolun başarısız olduğunu taşır. Çıplak bir `io::Error` "dosya
     /// bulunamadı" der ama hangi dosya olduğunu söylemez; kullanıcıya bu haliyle
     /// gösterilecek bir mesaj için bu yeterli değil.
-    #[error("{path}: {source}")]
+    ///
+    /// `{path:?}` bilerek `Display` değil: bu mesaj günlüğe de yazılıyor ve
+    /// Linux'ta dosya adı satır sonu içerebilir. Kaçış tek yerde, kaynağında
+    /// yapılıyor; böylece `OpError`'u loglayan her çağrı kendiliğinden güvenli.
+    #[error("{path:?}: {source}")]
     Io {
         path: PathBuf,
         #[source]
@@ -26,11 +30,30 @@ pub enum OpError {
     #[error("arşiv boş")]
     EmptyArchive,
 
+    /// Arşivin **kendi bildirdiği** boyut sınırın üzerinde.
     #[error("arşiv {} GB'a açılıyor, {} GB sınırının üzerinde", as_gb(*actual), as_gb(*limit))]
     TooLarge { actual: u64, limit: u64 },
 
+    /// Arşiv bildirdiğinden fazlasını açtı ve sınır çıkarma sırasında aşıldı.
+    ///
+    /// [`OpError::TooLarge`]'dan ayrı bir varyant, çünkü orada gerçek boyut
+    /// biliniyor; burada işlem sınıra varır varmaz durdurulduğu için bilinmiyor.
+    /// Tek bir varyantla ikisini anlatmak, mesajın yalan söylemesi demekti.
+    #[error("arşiv bildirdiğinden büyük: {} GB sınırı çıkarma sırasında aşıldı", as_gb(*limit))]
+    ExtractionExceededLimit { limit: u64 },
+
+    /// Hedefte, arşivin üst düzey adlarıyla çakışan girdiler var.
+    ///
+    /// Adlar taşınıyor: arayüz hangi save'lerin çakıştığını gösterebilmeli.
+    #[error("hedefte aynı adlı girdiler var: {}", .0.join(", "))]
+    Conflicts(Vec<String>),
+
     /// Arşivde hedef dizinin dışına yazmaya çalışan bir girdi var.
-    #[error("arşivde güvenli olmayan yol: {0}")]
+    ///
+    /// `{0:?}` bilerek: bu dize tümüyle arşivi üretenin denetiminde ve mesaj
+    /// günlüğe de yazılıyor. `Display` ile yazılsaydı, adında satır sonu olan bir
+    /// girdi günlük dosyasına sahte kayıt satırları ekleyebilirdi.
+    #[error("arşivde güvenli olmayan yol: {0:?}")]
     UnsafePath(String),
 }
 
@@ -61,6 +84,29 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("/tmp/save/player.ttp"), "{text}");
         assert!(text.contains("erişim reddedildi"), "{text}");
+    }
+
+    #[test]
+    fn a_path_with_a_newline_cannot_forge_a_log_line() {
+        // Linux'ta dosya adı satır sonu içerebilir. Bu mesaj günlüğe yazılıyor;
+        // kaçış olmadan sahte bir kayıt satırı üretilebilirdi.
+        let err = OpError::io("/tmp/Save\n[2026-08-17] ERROR sahte")(std::io::Error::other("x"));
+        let text = err.to_string();
+        assert!(!text.contains('\n'), "satır bölünüyor: {text}");
+        assert!(text.contains("\\n"), "{text}");
+    }
+
+    #[test]
+    fn an_unsafe_archive_name_with_a_newline_is_escaped() {
+        // Bu dize tümüyle arşivi üretenin denetiminde.
+        let err = OpError::UnsafePath("evil\n[2026-08-17] INFO sahte".to_string());
+        assert!(!err.to_string().contains('\n'), "{err}");
+    }
+
+    #[test]
+    fn conflicts_lists_every_clashing_name() {
+        let err = OpError::Conflicts(vec!["SaveA".to_string(), "SaveB".to_string()]);
+        assert!(err.to_string().contains("SaveA, SaveB"), "{err}");
     }
 
     #[test]

@@ -9,16 +9,51 @@ use std::path::Path;
 /// Python sürümü serbest biçimli bir sözlük tutuyor ve anahtarları çağrı
 /// yerlerinde dize olarak yazıyordu. Burada alanlar tiplenmiş: yanlış yazılmış
 /// bir anahtar derleme hatası olur, sessizce `None` dönmez.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` yok: `ui_scale` bir `f32` ve kayan nokta `Eq` uygulamaz. Testlerdeki
+// `assert_eq!` karşılaştırmaları `PartialEq` ile çalışmaya devam ediyor.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Boş dize "otomatik algıla" demektir — Python ile aynı sözleşme.
     pub custom_save_path: String,
     /// Boş dize "varsayılan dili kullan" demektir.
     pub language: String,
+    /// Arayüz ölçeği. `0.0` = otomatik algıla.
+    ///
+    /// egui, Qt'nin aksine masaüstünün yazı tipi boyutunu okumaz; ölçeği yalnızca
+    /// pencere yöneticisinin bildirdiği katsayıdan alır
+    /// (`pixels_per_point = zoom_factor * native_pixels_per_point`). Monitör
+    /// ölçeği %100 iken bu katsayı 1.0'dır ve 1440p bir panelde varsayılan 13 px
+    /// gövde metni, Python/Qt sürümüne göre belirgin biçimde küçük kalıyordu.
+    /// `Ctrl` + `+` çalışıyor ama eframe'in `persistence` özelliği kapalı olduğu
+    /// için her açılışta sıfırlanıyordu; bu alan onu kalıcı yapıyor.
+    ///
+    /// **Ham okunmaz** — [`Config::ui_scale`] üzerinden alınır.
+    pub ui_scale: f32,
 }
 
+/// Kabul edilen en küçük ve en büyük arayüz ölçeği.
+///
+/// egui'nin kendi hata ayıklama arayüzü `0.10..=10.0` aralığını kullanıyor; bu
+/// aralık daha dar, çünkü uçlarda arayüz kullanılamaz hâle geliyor.
+const MIN_UI_SCALE: f32 = 0.5;
+const MAX_UI_SCALE: f32 = 3.0;
+
 impl Config {
+    /// Doğrulanmış arayüz ölçeği; otomatik moddaysa `None`.
+    ///
+    /// `config.json` düz metin ve kullanıcı dizininde; bozulması zaten öngörülmüş
+    /// bir senaryo (bkz. [`Config::load`]). `"ui_scale": 1e400` geçerli JSON'dur
+    /// ve `f32::INFINITY` olarak ayrıştırılır; negatif ya da çok küçük değerler de
+    /// geçerlidir. `egui::Context::set_zoom_factor` hiçbir doğrulama yapmıyor —
+    /// ne kırpma ne `is_finite` — ve değer doğrudan font rasterleştirmeye gidiyor.
+    /// Doğrulama tek yerde, burada.
+    pub fn ui_scale(&self) -> Option<f32> {
+        if !self.ui_scale.is_finite() || self.ui_scale <= 0.0 {
+            return None;
+        }
+        Some(self.ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE))
+    }
     /// Ayarları okur. Hiçbir koşulda başarısız olmaz; okunamayan dosya
     /// varsayılanlara düşer.
     ///
@@ -29,13 +64,13 @@ impl Config {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Self::default(),
             Err(err) => {
-                log::warn!("Ayar dosyası okunamadı ({}): {err}", path.display());
+                log::warn!("Ayar dosyası okunamadı ({path:?}): {err}");
                 return Self::default();
             }
         };
 
         serde_json::from_str(&text).unwrap_or_else(|err| {
-            log::warn!("Ayar dosyası bozuk ({}): {err}", path.display());
+            log::warn!("Ayar dosyası bozuk ({path:?}): {err}");
             Self::default()
         })
     }
@@ -74,6 +109,7 @@ mod tests {
         Config {
             custom_save_path: "/tmp/saves".to_string(),
             language: "en".to_string(),
+            ..Default::default()
         }
     }
 
@@ -121,6 +157,57 @@ mod tests {
         std::fs::write(&path, r#"{"language":"tr","from_the_future":42}"#).unwrap();
 
         assert_eq!(Config::load(&path).language, "tr");
+    }
+
+    #[test]
+    fn ui_scale_defaults_to_automatic() {
+        assert_eq!(Config::default().ui_scale(), None);
+    }
+
+    #[test]
+    fn a_sane_ui_scale_passes_through() {
+        let config = Config {
+            ui_scale: 1.25,
+            ..Default::default()
+        };
+        assert_eq!(config.ui_scale(), Some(1.25));
+    }
+
+    #[test]
+    fn a_hostile_ui_scale_cannot_reach_the_renderer() {
+        // `set_zoom_factor` hiçbir doğrulama yapmıyor ve değer doğrudan font
+        // rasterleştirmeye gidiyor; sonsuz ya da negatif bir ölçek uygulamayı
+        // arayüz çizilmeden öldürebilirdi.
+        for hostile in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, -1.0, 0.0] {
+            let config = Config {
+                ui_scale: hostile,
+                ..Default::default()
+            };
+            match config.ui_scale() {
+                None => {}
+                Some(value) => panic!("{hostile} otomatik moda düşmeliydi, gelen: {value}"),
+            }
+        }
+
+        // Sonlu ama uçlarda olan değerler kırpılır, reddedilmez.
+        for (raw, expected) in [(1e30_f32, MAX_UI_SCALE), (0.0001, MIN_UI_SCALE)] {
+            let config = Config {
+                ui_scale: raw,
+                ..Default::default()
+            };
+            assert_eq!(config.ui_scale(), Some(expected), "ham değer {raw}");
+        }
+    }
+
+    #[test]
+    fn a_corrupt_ui_scale_on_disk_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // 1e400 geçerli JSON; f64 aralığını aştığı için sonsuza ayrıştırılır.
+        std::fs::write(&path, r#"{"language":"tr","ui_scale":1e400}"#).unwrap();
+
+        let config = Config::load(&path);
+        assert_eq!(config.ui_scale(), None);
     }
 
     #[test]
@@ -176,6 +263,7 @@ mod tests {
         let outcome = Config {
             custom_save_path: "/should/not/land".to_string(),
             language: "de".to_string(),
+            ..Default::default()
         }
         .save(&path);
 
