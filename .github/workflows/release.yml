@@ -59,16 +59,25 @@ jobs:
         # must be unique — in the Python repo one silently replaced the other
         # and Linux users got no binary at all for a release. The suffix also
         # tells a downloader which build they are getting.
+        #
+        # Linux and macOS ship inside a tarball. Release assets are plain blobs:
+        # GitHub does not carry file modes, so a bare Unix binary arrives without
+        # its executable bit. With no extension either, macOS Finder took it for
+        # a text document and opened it in TextEdit rather than running it. tar
+        # records the mode, so extracting restores it. Windows has no executable
+        # bit and `.exe` is recognised on its own, so it stays a bare file.
         include:
           - os: ubuntu-latest
             asset: seven-days-to-backup
-            release_name: 7DaysToBackup-rust-linux
+            binary_name: 7DaysToBackup
+            release_name: 7DaysToBackup-rust-linux.tar.gz
           - os: windows-latest
             asset: seven-days-to-backup.exe
             release_name: 7DaysToBackup-rust-windows.exe
           - os: macos-latest
             asset: seven-days-to-backup
-            release_name: 7DaysToBackup-rust-macos
+            binary_name: 7DaysToBackup
+            release_name: 7DaysToBackup-rust-macos.tar.gz
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -93,8 +102,32 @@ jobs:
       - name: Stage release asset
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p out
-          cp "target/release/${{ matrix.asset }}" "out/${{ matrix.release_name }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/release/${{ matrix.asset }}" "out/${{ matrix.release_name }}"
+          else
+            mkdir -p stage
+            cp "target/release/${{ matrix.asset }}" "stage/${{ matrix.binary_name }}"
+            # cargo already marks it executable; setting it explicitly means the
+            # tarball is correct even if that ever stops being true.
+            chmod +x "stage/${{ matrix.binary_name }}"
+            tar -czf "out/${{ matrix.release_name }}" -C stage "${{ matrix.binary_name }}"
+          fi
+
+      # A tarball whose contents are not executable would defeat the whole point,
+      # and it fails silently — the download simply refuses to start.
+      - name: Verify the archived binary is executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode=$(tar -tvzf "out/${{ matrix.release_name }}" | awk 'NR==1 {print $1}')
+          echo "mode: $mode"
+          case "$mode" in
+            *x*) ;;
+            *) echo "::error::archived binary is not executable ($mode)"; exit 1 ;;
+          esac
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -151,6 +184,6 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: true
           files: |
-            artifacts/7DaysToBackup-rust-linux/7DaysToBackup-rust-linux
+            artifacts/7DaysToBackup-rust-linux.tar.gz/7DaysToBackup-rust-linux.tar.gz
             artifacts/7DaysToBackup-rust-windows.exe/7DaysToBackup-rust-windows.exe
-            artifacts/7DaysToBackup-rust-macos/7DaysToBackup-rust-macos
+            artifacts/7DaysToBackup-rust-macos.tar.gz/7DaysToBackup-rust-macos.tar.gz

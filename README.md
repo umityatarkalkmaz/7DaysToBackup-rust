@@ -28,8 +28,26 @@ bölümünden platformunuza uygun dosyayı indirin:
 | Platform | Dosya |
 |---|---|
 | Windows | `7DaysToBackup-rust-windows.exe` |
-| Linux | `7DaysToBackup-rust-linux` |
-| macOS | `7DaysToBackup-rust-macos` |
+| Linux | `7DaysToBackup-rust-linux.tar.gz` |
+| macOS | `7DaysToBackup-rust-macos.tar.gz` |
+
+**Windows:** indirip çift tıklayın.
+
+**Linux ve macOS:** arşivi açın, sonra çalıştırın:
+
+```bash
+tar -xzf 7DaysToBackup-rust-linux.tar.gz   # ya da -macos.tar.gz
+./7DaysToBackup
+```
+
+> Linux ve macOS ikilileri neden arşiv içinde: GitHub yayın varlıkları düz
+> dosyadır ve çalıştırma iznini taşımaz. Doğrudan indirilen uzantısız bir dosyayı
+> macOS metin belgesi sanıp TextEdit'te açıyordu. `tar` izni kaydettiği için
+> arşivden çıkan dosya doğrudan çalışır.
+
+> **macOS'ta "geliştirici doğrulanamadı" uyarısı:** uygulama imzalı değil.
+> Dosyaya sağ tıklayıp **Aç** deyin ve onaylayın, ya da terminalde
+> `xattr -d com.apple.quarantine 7DaysToBackup` çalıştırın.
 
 > EXE imzasız dağıtıldığı için bazı antivirüs programları uyarı verebilir. Bu,
 > uygulamanın güvensiz olduğu anlamına gelmez; endişeniz varsa aşağıdaki adımlarla
