@@ -66,6 +66,12 @@ zip = { version = "8.6.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+# Font kapsama testi için. epaint zaten bu sürümü derliyor, ek maliyeti yok.
+# egui'nin `has_glyph`'i bu iş için kullanılamıyor: yedek karakter bulunamadığında
+# yerine geçen yüz fontun kendisi oluyor ve fonksiyon o fonttaki her karakter için
+# `false` dönüyor.
+skrifa = "0.44.0"
+
 # Arayüz testleri accesskit ağacı üzerinden çalışır; render gerekmez.
 # Ekran görüntüsü almak için geçici olarak "wgpu" ve "snapshot" özelliklerini
 # ekleyip `Harness::builder().wgpu()` ile kurun — CI'da her koşuda wgpu

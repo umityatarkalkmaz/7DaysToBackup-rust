@@ -219,7 +219,10 @@ pub fn fill1(template: &str, value: impl Display) -> String {
 #[cfg(test)]
 impl Strings {
     /// Testlerin bütün alanları tek tek gezebilmesi için (ad, değer) çiftleri.
-    fn fields(&self) -> Vec<(&'static str, &'static str)> {
+    ///
+    /// `pub(crate)`: `ui::theme` testleri de buradan geçip her glifin yüklü
+    /// fontlarca kapsandığını doğruluyor.
+    pub(crate) fn fields(&self) -> Vec<(&'static str, &'static str)> {
         vec![
             ("title", self.title),
             ("map_list", self.map_list),

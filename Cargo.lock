@@ -2687,6 +2687,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "skrifa",
  "tempfile",
  "thiserror 2.0.20",
  "walkdir",

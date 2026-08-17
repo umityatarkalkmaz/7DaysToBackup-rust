@@ -27,11 +27,11 @@ bölümünden platformunuza uygun dosyayı indirin:
 
 | Platform | Dosya |
 |---|---|
-| Windows | `7DaysToBackup-rust-windows.exe` |
+| Windows | `7DaysToBackup-rust-windows.zip` |
 | Linux | `7DaysToBackup-rust-linux.tar.gz` |
 | macOS | `7DaysToBackup-rust-macos.tar.gz` |
 
-**Windows:** indirip çift tıklayın.
+**Windows:** zip'e çift tıklayıp içindeki `7DaysToBackup.exe`'yi çıkarın.
 
 **Linux ve macOS:** arşivi açın, sonra çalıştırın:
 
@@ -39,6 +39,9 @@ bölümünden platformunuza uygun dosyayı indirin:
 tar -xzf 7DaysToBackup-rust-linux.tar.gz   # ya da -macos.tar.gz
 ./7DaysToBackup
 ```
+
+> macOS ikilisi **yalnızca Apple Silicon (arm64)** içindir; Intel Mac'lerde
+> çalışmaz.
 
 > Linux ve macOS ikilileri neden arşiv içinde: GitHub yayın varlıkları düz
 > dosyadır ve çalıştırma iznini taşımaz. Doğrudan indirilen uzantısız bir dosyayı
