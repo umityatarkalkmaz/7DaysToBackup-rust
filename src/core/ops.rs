@@ -42,6 +42,16 @@ impl ProgressSink for NoopSink {
     }
 }
 
+/// Yedek klasörü adında save adını zaman damgasından ayıran işaret.
+pub const BACKUP_MARKER: &str = "_backup_";
+
+/// Zaman damgası biçimi.
+///
+/// Üretim ([`timestamp_suffix`]) ve ayrıştırma ([`parse_backup_name`]) tek
+/// yerden beslensin diye sabit: ikisi ayrışırsa alınan yedekler kendi
+/// geçmişlerinde görünmez olurdu.
+const TIMESTAMP_FORMAT: &str = "%Y.%m.%d-%H.%M.%S";
+
 /// Yedek ve dışa aktarmanın paylaştığı zaman damgası — ikisi birbirinden
 /// ayrışamasın diye tek yerde.
 ///
@@ -49,12 +59,6 @@ impl ProgressSink for NoopSink {
 /// tercih edildi çünkü `time` crate'inin `now_local()` fonksiyonu Unix'te çok
 /// iş parçacıklı süreçlerde `IndeterminateOffset` ile başarısız oluyor — ve bu
 /// uygulama işlemleri çalışan iş parçacıklarında koşturuyor.
-/// Yedek klasörü adında save adını zaman damgasından ayıran işaret.
-pub const BACKUP_MARKER: &str = "_backup_";
-
-/// Zaman damgası biçimi. Üretim ve ayrıştırma tek yerden beslensin diye sabit.
-const TIMESTAMP_FORMAT: &str = "%Y.%m.%d-%H.%M.%S";
-
 pub fn timestamp_suffix() -> String {
     chrono::Local::now().format(TIMESTAMP_FORMAT).to_string()
 }
@@ -279,6 +283,66 @@ fn retry_without_readonly(_target: &Path, _mtime: filetime::FileTime) -> bool {
     false
 }
 
+/// Çok save'li bir işlemde ilerlemeyi **save sayısı** üzerinden bildirir.
+///
+/// Dosya sayısı üzerinden bildirmek için bütün save'lerin önden gezilmesi
+/// gerekirdi ve bu, işin başında uzun bir sessizlik demek olurdu. Save
+/// granülerliği hem anlaşılır ("3 / 7") hem de bedava.
+///
+/// İptal içteki her `tick` çağrısında kontrol edilmeye devam ediyor: sarmalayıcı
+/// çağrıyı olduğu gibi asıl sink'e iletiyor.
+struct PerSave<'a> {
+    inner: &'a dyn ProgressSink,
+    done: u64,
+    total: u64,
+}
+
+impl ProgressSink for PerSave<'_> {
+    fn tick(&self, _done: u64, _total: u64) -> Result<(), OpError> {
+        self.inner.tick(self.done, self.total)
+    }
+}
+
+/// Birden çok save'i sırayla kopyalar.
+///
+/// Yarıda kesilirse o ana kadar tamamlanmış yedekler **kalır**: her biri kendi
+/// başına geçerli bir yedektir ve silmek kullanıcıya bir şey kazandırmaz.
+/// Yarım kalan tek kopyayı `copy_save`'in kendi nöbetçisi topluyor.
+pub fn copy_saves(pairs: &[(PathBuf, PathBuf)], sink: &dyn ProgressSink) -> Result<(), OpError> {
+    let total = pairs.len() as u64;
+    for (index, (source, destination)) in pairs.iter().enumerate() {
+        let done = index as u64 + 1;
+        sink.tick(done, total)?;
+        copy_save(
+            source,
+            destination,
+            &PerSave {
+                inner: sink,
+                done,
+                total,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Birden çok save'i sırayla siler.
+pub fn delete_saves(sources: &[PathBuf], sink: &dyn ProgressSink) -> Result<(), OpError> {
+    let total = sources.len() as u64;
+    for (index, source) in sources.iter().enumerate() {
+        let done = index as u64 + 1;
+        delete_save(
+            source,
+            &PerSave {
+                inner: sink,
+                done,
+                total,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 /// Bir save dizinini kopyalar.
 ///
 /// İptalde veya hatada yarım kalan hedef silinir. Geride bırakmak, save
@@ -481,10 +545,39 @@ pub fn export_save(
     compression_level: i64,
     sink: &dyn ProgressSink,
 ) -> Result<(), OpError> {
-    let files = walk_files(source)?;
+    export_saves(
+        std::slice::from_ref(&source.to_path_buf()),
+        zip_path,
+        compression_level,
+        sink,
+    )
+}
+
+/// Birden çok save'i **tek** zip'e koyar; her save arşivin kökünde ayrı bir dal.
+///
+/// Çok köklü arşiv içe aktarma tarafında ek iş istemiyor: [`archive_conflicts`]
+/// zaten **her** üst düzey girdiyi kontrol ediyor.
+pub fn export_saves(
+    sources: &[PathBuf],
+    zip_path: &Path,
+    compression_level: i64,
+    sink: &dyn ProgressSink,
+) -> Result<(), OpError> {
+    // Bütün dosyalar önden toplanıyor: ilerleme oranı ancak toplam bilindiğinde
+    // anlamlı ve bu gezinme, sıkıştırmanın yanında ölçülemeyecek kadar ucuz.
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for source in sources {
+        // Arşivin kökünde save adının kalması için bir üst dizinden göreceleştiriyoruz.
+        let base = source.parent().unwrap_or(source);
+        for path in walk_files(source)? {
+            let relative = path
+                .strip_prefix(base)
+                .expect("walkdir kökün altındaki yolları üretir")
+                .to_path_buf();
+            files.push((path, relative));
+        }
+    }
     let total = files.len() as u64;
-    // Arşivin kökünde save adının kalması için bir üst dizinden göreceleştiriyoruz.
-    let base = source.parent().unwrap_or(source);
 
     let guard = CleanupGuard::arm(zip_path, PathKind::File);
     let file = fs::File::create(zip_path).map_err(OpError::io(zip_path))?;
@@ -493,24 +586,15 @@ pub fn export_save(
         .compression_method(zip::CompressionMethod::Deflated)
         .compression_level(Some(compression_level));
 
-    for (index, path) in files.iter().enumerate() {
-        sink.tick(index as u64 + 1, total)?;
+    for (index, (path, relative)) in files.iter().enumerate() {
+        let done = index as u64 + 1;
+        sink.tick(done, total)?;
 
-        let relative = path
-            .strip_prefix(base)
-            .expect("walkdir kökün altındaki yolları üretir");
         writer.start_file(zip_entry_name(relative), options)?;
         let mut input = fs::File::open(path).map_err(OpError::io(path))?;
         // Akışla kopyalanır: büyük bir bölge dosyası belleğe alınmaz. Parçalı
         // olması iptalin dosya ortasında da yanıt vermesini sağlıyor.
-        copy_chunked(
-            &mut input,
-            &mut writer,
-            sink,
-            (index as u64 + 1, total),
-            u64::MAX,
-            path,
-        )?;
+        copy_chunked(&mut input, &mut writer, sink, (done, total), u64::MAX, path)?;
     }
 
     writer.finish()?;

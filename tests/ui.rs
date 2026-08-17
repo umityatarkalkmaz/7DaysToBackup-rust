@@ -81,6 +81,35 @@ fn harness(fixture: &Fixture, size: egui::Vec2) -> Harness<'static, BackupApp> {
     harness
 }
 
+/// Bir öğeye verilen değiştiricilerle tıklar.
+///
+/// `Node::click()` değiştirici taşımıyor, `RawInput`'ta da genel bir `modifiers`
+/// alanı yok. Üstelik `PointerButton` olayının kendi `modifiers` alanı da yetmiyor:
+/// `InputState.modifiers` yalnızca `Event::ModifiersChanged` ile güncelleniyor
+/// (`egui/src/input_state/mod.rs:433`), yani tuşun basıldığı ayrıca bildirilmeli.
+fn click_with(harness: &mut Harness<'static, BackupApp>, label: &str, modifiers: egui::Modifiers) {
+    let pos = harness.get_by_label(label).rect().center();
+    let events = &mut harness.input_mut().events;
+    events.push(egui::Event::ModifiersChanged(modifiers));
+    events.push(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        });
+    }
+    harness.run();
+
+    // Tuş bırakılıyor: aksi halde sonraki tıklamalara sızardı.
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    harness.run();
+}
+
 fn screen(size: egui::Vec2) -> egui::Rect {
     egui::Rect::from_min_size(egui::Pos2::ZERO, size)
 }
@@ -238,6 +267,93 @@ fn the_three_lists_sit_side_by_side_without_overlapping() {
             "{size:?}: son sütun pencereden taşıyor ({previous_right})"
         );
     }
+}
+
+#[test]
+fn ctrl_click_adds_a_second_save_to_the_selection() {
+    let fixture = fixture();
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+
+    harness.get_by_label("SaveA").click();
+    harness.run();
+
+    // Ctrl basılıyken tıklamak seçimi değiştirmek yerine ekler.
+    click_with(&mut harness, "SaveB", egui::Modifiers::COMMAND);
+
+    // İki save seçiliyken yedek geçmişi boşalır: hangisinin geçmişi olduğu
+    // belirsiz olurdu.
+    assert!(
+        harness.query_by_label("Bu save'in yedeği yok").is_some(),
+        "çoklu seçimde geçmiş sütunu boşalmadı"
+    );
+
+    // Yedekleme ikisini birden almalı.
+    harness.get_by_label("Yedekle").click();
+    let map_dir = PathBuf::from(&fixture.config.custom_save_path).join("Navezgane");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while harness.query_by_label("Yedekleme başarılı").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "yedekleme zamanında bitmedi"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.step();
+    }
+
+    let backups: Vec<String> = std::fs::read_dir(&map_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("_backup_"))
+        .collect();
+    assert_eq!(
+        backups.len(),
+        2,
+        "iki yedek beklenirdi, bulunan: {backups:?}"
+    );
+    assert!(backups.iter().any(|name| name.starts_with("SaveA_backup_")));
+    assert!(backups.iter().any(|name| name.starts_with("SaveB_backup_")));
+}
+
+#[test]
+fn a_plain_click_replaces_the_selection() {
+    let fixture = fixture();
+    let mut harness = harness(&fixture, WINDOW);
+    harness.get_by_label("Navezgane").click();
+    harness.run();
+
+    harness.get_by_label("SaveA").click();
+    harness.run();
+    click_with(&mut harness, "SaveB", egui::Modifiers::COMMAND);
+
+    // Düz tıklama yalnız o öğeyi bırakmalı; tek seçim geri geldiğinde geçmiş
+    // sütunu da yeniden o save'e ait olur.
+    harness.get_by_label("SaveA").click();
+    harness.run();
+    harness.get_by_label("Yedekle").click();
+
+    let map_dir = PathBuf::from(&fixture.config.custom_save_path).join("Navezgane");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while harness.query_by_label("Yedekleme başarılı").is_none() {
+        assert!(std::time::Instant::now() < deadline, "yedekleme bitmedi");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.step();
+    }
+
+    let backups: Vec<String> = std::fs::read_dir(&map_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("_backup_"))
+        .collect();
+    assert_eq!(
+        backups.len(),
+        1,
+        "yalnız SaveA yedeklenmeliydi: {backups:?}"
+    );
+    assert!(backups[0].starts_with("SaveA_backup_"));
 }
 
 // ------------------------------------------------------------------- yedekler

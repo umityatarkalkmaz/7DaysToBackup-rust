@@ -14,6 +14,7 @@ ile yazıldı. Çıktı, hedef makinede Python, Qt veya webview gerektirmeyen te
 - Tarih damgalı yedekleme (`SaveA_backup_2026.08.16-14.30.00`)
 - Onay isteyen silme
 - Yedek geçmişi ve geri yükleme
+- Çoklu save seçimi (Ctrl ile ekle, Shift ile aralık)
 - Zip'e dışa aktarma (masaüstüne)
 - Zip'ten içe aktarma, çakışma ve boyut denetimiyle
 - İlerleme göstergesi ve iptal

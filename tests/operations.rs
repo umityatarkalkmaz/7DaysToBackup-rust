@@ -494,6 +494,117 @@ fn a_declared_size_within_the_limit_is_accepted() {
     assert!(matches!(error, OpError::TooLarge { .. }), "{error}");
 }
 
+// ------------------------------------------------------------------ çoklu save
+
+#[test]
+fn copying_several_saves_makes_one_backup_each() {
+    let dir = temp();
+    let pairs: Vec<(PathBuf, PathBuf)> = ["SaveA", "SaveB", "SaveC"]
+        .iter()
+        .map(|name| {
+            let source = default_save(dir.path(), name);
+            let destination = dir
+                .path()
+                .join(format!("{name}_backup_2026.08.16-14.30.00"));
+            (source, destination)
+        })
+        .collect();
+
+    ops::copy_saves(&pairs, &NoopSink).unwrap();
+
+    for (source, destination) in &pairs {
+        assert_eq!(snapshot(source), snapshot(destination));
+    }
+}
+
+#[test]
+fn multi_save_progress_counts_saves_not_files() {
+    // Dosya sayısı üzerinden bildirmek bütün save'lerin önden gezilmesini
+    // gerektirirdi; save granülerliği hem anlaşılır hem bedava.
+    let dir = temp();
+    let pairs: Vec<(PathBuf, PathBuf)> = ["SaveA", "SaveB"]
+        .iter()
+        .map(|name| {
+            (
+                default_save(dir.path(), name),
+                dir.path().join(format!("{name}_copy")),
+            )
+        })
+        .collect();
+
+    let sink = Recorder::default();
+    ops::copy_saves(&pairs, &sink).unwrap();
+
+    let seen = sink.seen.borrow();
+    assert!(!seen.is_empty());
+    for (done, total) in seen.iter() {
+        assert_eq!(*total, 2, "toplam save sayısı olmalı");
+        assert!(*done <= 2, "ilerleme toplamı aşıyor: {done}");
+    }
+}
+
+#[test]
+fn deleting_several_saves_removes_all_of_them() {
+    let dir = temp();
+    let sources: Vec<PathBuf> = ["SaveA", "SaveB"]
+        .iter()
+        .map(|name| default_save(dir.path(), name))
+        .collect();
+
+    ops::delete_saves(&sources, &NoopSink).unwrap();
+
+    for source in &sources {
+        assert!(!source.exists());
+    }
+}
+
+#[test]
+fn several_saves_export_into_one_multi_root_archive() {
+    // Çok köklü arşiv içe aktarma tarafında ek iş istemiyor: `archive_conflicts`
+    // zaten her üst düzey girdiyi kontrol ediyor.
+    let dir = temp();
+    let sources: Vec<PathBuf> = ["SaveA", "SaveB"]
+        .iter()
+        .map(|name| default_save(dir.path(), name))
+        .collect();
+    let zip_path = dir.path().join("both.zip");
+
+    ops::export_saves(&sources, &zip_path, DEFAULT_COMPRESSION_LEVEL, &NoopSink).unwrap();
+
+    let target = dir.path().join("target");
+    fs::create_dir(&target).unwrap();
+    ops::import_save(&zip_path, &target, ops::MAX_EXTRACT_BYTES, &NoopSink).unwrap();
+
+    for (index, name) in ["SaveA", "SaveB"].iter().enumerate() {
+        assert_eq!(
+            snapshot(&sources[index]),
+            snapshot(&target.join(name)),
+            "{name} arşivden aynı çıkmadı"
+        );
+    }
+}
+
+#[test]
+fn a_multi_root_archive_reports_every_conflicting_name() {
+    let dir = temp();
+    let sources: Vec<PathBuf> = ["SaveA", "SaveB"]
+        .iter()
+        .map(|name| default_save(dir.path(), name))
+        .collect();
+    let zip_path = dir.path().join("both.zip");
+    ops::export_saves(&sources, &zip_path, DEFAULT_COMPRESSION_LEVEL, &NoopSink).unwrap();
+
+    // Hedefte ikisi de var.
+    let target = dir.path().join("target");
+    default_save(&target, "SaveA");
+    default_save(&target, "SaveB");
+
+    assert_eq!(
+        ops::archive_conflicts(&zip_path, &target).unwrap(),
+        vec!["SaveA".to_string(), "SaveB".to_string()]
+    );
+}
+
 // ------------------------------------------------------------------ yedek adları
 
 #[test]

@@ -27,7 +27,7 @@ const DIALOG_WIDTH: f32 = 420.0;
 
 /// Onaylandığında çalıştırılacak iş.
 enum PendingAction {
-    Delete(PathBuf),
+    Delete(Vec<PathBuf>),
     DeleteBackup(PathBuf),
     /// Geri yükleme: (yedek, save, güvenlik adı).
     ///
@@ -61,7 +61,14 @@ pub struct BackupApp {
     selected_map: Option<usize>,
     /// Gerçek save'ler — yedekler süzülmüş hâli.
     saves: Vec<String>,
-    selected_save: Option<usize>,
+    /// Seçili save'lerin indisleri.
+    ///
+    /// Çoklu seçim: yedekle, sil ve dışa aktar birden çok save üzerinde
+    /// çalışabiliyor. `BTreeSet` sıralı tutuyor, böylece işlemler listedeki
+    /// sırayla yürüyor ve ilerleme okunabilir kalıyor.
+    selected_saves: std::collections::BTreeSet<usize>,
+    /// `Shift` ile aralık seçiminin başladığı yer.
+    save_anchor: Option<usize>,
 
     /// Seçili map'in bütün yedekleri; hangi save'e ait olduğu adında.
     ///
@@ -111,7 +118,8 @@ impl BackupApp {
             maps: Vec::new(),
             selected_map: None,
             saves: Vec::new(),
-            selected_save: None,
+            selected_saves: std::collections::BTreeSet::new(),
+            save_anchor: None,
             all_backups: Vec::new(),
             backups: Vec::new(),
             selected_backup: None,
@@ -153,7 +161,8 @@ impl BackupApp {
             self.all_backups.clear();
             self.backups.clear();
             self.selected_map = None;
-            self.selected_save = None;
+            self.selected_saves.clear();
+            self.save_anchor = None;
             self.selected_backup = None;
             return;
         }
@@ -171,10 +180,11 @@ impl BackupApp {
     /// seçmesi gerekiyordu. Silmeden sonra ad zaten kaybolduğu için seçim
     /// kendiliğinden temizlenir.
     pub fn rescan_saves(&mut self) {
-        let previous = self.selected_save_name().map(str::to_string);
+        let previous: Vec<String> = self.selected_save_names().map(str::to_string).collect();
         self.saves.clear();
         self.all_backups.clear();
-        self.selected_save = None;
+        self.selected_saves.clear();
+        self.save_anchor = None;
 
         if let Some(map) = self.selected_map_name() {
             let path = self.saves_root.join(map);
@@ -189,7 +199,12 @@ impl BackupApp {
             }
         }
 
-        self.selected_save = previous.and_then(|name| index_of(&self.saves, &name));
+        // Seçim adlarıyla korunuyor: silinen bir save kendiliğinden düşer,
+        // kalanlar seçili kalır.
+        self.selected_saves = previous
+            .iter()
+            .filter_map(|name| index_of(&self.saves, name))
+            .collect();
         self.refresh_backups();
     }
 
@@ -240,13 +255,36 @@ impl BackupApp {
             .map(String::as_str)
     }
 
-    fn selected_save_name(&self) -> Option<&str> {
-        self.selected_save
-            .and_then(|index| self.saves.get(index))
+    /// Seçili save adları, listedeki sırayla.
+    fn selected_save_names(&self) -> impl Iterator<Item = &str> {
+        self.selected_saves
+            .iter()
+            .filter_map(|index| self.saves.get(*index))
             .map(String::as_str)
     }
 
-    /// Seçili save'in tam yolu. İkisinden biri seçili değilse `None`.
+    /// **Tam olarak bir** save seçiliyse adı.
+    ///
+    /// Yedek geçmişi tek bir save'e ait; birden çok save seçiliyken hangisinin
+    /// geçmişinin gösterileceği belirsiz olurdu, o yüzden geçmiş boşalıyor.
+    fn selected_save_name(&self) -> Option<&str> {
+        let mut names = self.selected_save_names();
+        let only = names.next()?;
+        names.next().is_none().then_some(only)
+    }
+
+    /// Seçili save'lerin tam yolları.
+    fn selected_save_paths(&self) -> Vec<PathBuf> {
+        let Some(map) = self.selected_map_name() else {
+            return Vec::new();
+        };
+        let root = self.saves_root.join(map);
+        self.selected_save_names()
+            .map(|save| root.join(save))
+            .collect()
+    }
+
+    /// Tek seçili save'in tam yolu. Geri yükleme hedefi için.
     fn selected_save_path(&self) -> Option<PathBuf> {
         let map = self.selected_map_name()?;
         let save = self.selected_save_name()?;
@@ -323,59 +361,77 @@ impl BackupApp {
         self.task = Some(task::spawn(kind, cancellable, wake(ctx), work));
     }
 
-    fn require_selection(&mut self) -> Option<PathBuf> {
-        match self.selected_save_path() {
-            Some(path) => Some(path),
-            None => {
-                self.dialog = Some(Dialog::Error(self.strings().selection_error.to_string()));
-                None
-            }
+    /// Seçili save'lerin yolları; hiçbiri seçili değilse hata penceresi açar.
+    fn require_selection(&mut self) -> Vec<PathBuf> {
+        let paths = self.selected_save_paths();
+        if paths.is_empty() {
+            self.dialog = Some(Dialog::Error(self.strings().selection_error.to_string()));
         }
+        paths
     }
 
     fn on_backup(&mut self, ctx: &Context) {
-        let Some(source) = self.require_selection() else {
+        let sources = self.require_selection();
+        if sources.is_empty() {
             return;
-        };
+        }
 
-        // `OsString` üzerinden ekleniyor: `display()` üzerinden geçmek UTF-8
-        // olmayan bir dosya adını sessizce bozardı.
-        let mut name = source.clone().into_os_string();
-        name.push(format!("_backup_{}", ops::timestamp_suffix()));
-        let destination = ops::unique_path(PathBuf::from(name), PathKind::Dir);
+        // Zaman damgası bir kez alınıyor: aynı işlemde alınan yedekler aynı anı
+        // taşımalı, aksi halde geçmişte saniye farkıyla dağılırlardı.
+        let stamp = ops::timestamp_suffix();
+        let pairs: Vec<(PathBuf, PathBuf)> = sources
+            .into_iter()
+            .map(|source| {
+                // `OsString` üzerinden ekleniyor: `display()` üzerinden geçmek
+                // UTF-8 olmayan bir dosya adını sessizce bozardı.
+                let mut name = source.clone().into_os_string();
+                name.push(format!("{}{stamp}", ops::BACKUP_MARKER));
+                let destination = ops::unique_path(PathBuf::from(name), PathKind::Dir);
+                (source, destination)
+            })
+            .collect();
 
-        log::info!("Yedek {source:?} -> {destination:?}");
+        log::info!("Yedek {pairs:?}");
         self.start(ctx, TaskKind::Backup, true, move |sink| {
-            ops::copy_save(&source, &destination, sink)
+            ops::copy_saves(&pairs, sink)
         });
     }
 
     fn on_delete(&mut self, _ctx: &Context) {
-        let Some(source) = self.require_selection() else {
+        let sources = self.require_selection();
+        if sources.is_empty() {
             return;
-        };
-        let name = self.selected_save_name().unwrap_or_default().to_string();
+        }
+        // Tek onay, hepsi listelenerek: art arda onay istemek kullanıcıyı
+        // okumadan tıklamaya alıştırır.
+        let names: Vec<&str> = self.selected_save_names().collect();
         self.dialog = Some(Dialog::Confirm {
-            text: fill1(self.strings().delete_confirm, name),
-            action: PendingAction::Delete(source),
+            text: fill1(self.strings().delete_confirm, names.join(", ")),
+            action: PendingAction::Delete(sources),
         });
     }
 
     fn on_export(&mut self, ctx: &Context) {
-        let Some(source) = self.require_selection() else {
+        let sources = self.require_selection();
+        if sources.is_empty() {
             return;
-        };
-        let name = self.selected_save_name().unwrap_or_default().to_string();
+        }
 
+        // Birden çok save tek arşive giriyor; ad, seçim tek olduğunda save'in
+        // kendisi, çoklu olduğunda map'in adı oluyor.
+        let name = match self.selected_save_name() {
+            Some(save) => save.to_string(),
+            None => self.selected_map_name().unwrap_or("saves").to_string(),
+        };
         let zip_path = ops::unique_path(
             platform::export_dir().join(format!("{name}_{}.zip", ops::timestamp_suffix())),
             PathKind::File,
         );
 
-        log::info!("Dışa aktar {source:?} -> {zip_path:?}");
+        log::info!("Dışa aktar {sources:?} -> {zip_path:?}");
         self.last_export = Some(zip_path.clone());
         self.start(ctx, TaskKind::Export, true, move |sink| {
-            ops::export_save(&source, &zip_path, ops::DEFAULT_COMPRESSION_LEVEL, sink)
+            ops::export_saves(&sources, &zip_path, ops::DEFAULT_COMPRESSION_LEVEL, sink)
         });
     }
 
@@ -480,14 +536,13 @@ impl BackupApp {
             map_changed = before != self.selected_map;
 
             columns[1].label(strings.save_list);
-            let before = self.selected_save;
-            selectable_list(
+            save_changed = multi_select_list(
                 &mut columns[1],
                 "saves",
                 &self.saves,
-                &mut self.selected_save,
+                &mut self.selected_saves,
+                &mut self.save_anchor,
             );
-            save_changed = before != self.selected_save;
 
             columns[2].label(strings.backup_list);
             if self.backups.is_empty() {
@@ -508,7 +563,8 @@ impl BackupApp {
         });
 
         if map_changed {
-            self.selected_save = None;
+            self.selected_saves.clear();
+            self.save_anchor = None;
             self.rescan_saves();
         } else if save_changed {
             // Yalnızca süzme değişti; diske gitmeye gerek yok.
@@ -519,7 +575,7 @@ impl BackupApp {
     fn actions(&mut self, ui: &mut Ui, ctx: &Context) {
         let strings = self.strings();
         // Seçim varsa yol da vardır; düğme durumu için diske gitmeye gerek yok.
-        let has_save = self.selected_save_name().is_some();
+        let has_save = !self.selected_saves.is_empty();
         let has_map = self.selected_map_name().is_some();
 
         ui.add_space(4.0);
@@ -757,12 +813,12 @@ impl BackupApp {
 
     fn run(&mut self, ctx: &Context, action: PendingAction) {
         match action {
-            PendingAction::Delete(source) => {
-                log::info!("Sil {source:?}");
+            PendingAction::Delete(sources) => {
+                log::info!("Sil {sources:?}");
                 // İptal edilebilir değil: yarıda kesilmiş bir silme, kısmen
                 // silinmiş bir save bırakır.
                 self.start(ctx, TaskKind::Delete, false, move |sink| {
-                    ops::delete_save(&source, sink)
+                    ops::delete_saves(&sources, sink)
                 });
             }
             PendingAction::DeleteBackup(source) => {
@@ -912,6 +968,14 @@ fn empty_list(ui: &mut Ui, text: &str) {
         });
 }
 
+/// Liste satırının yüksekliği. `show_rows` sabit yükseklik ister; tema ve ölçek
+/// değiştiği için sabit yazılamaz.
+fn list_row_height(ui: &Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Body)
+        + ui.spacing().button_padding.y * 2.0
+        + ui.spacing().item_spacing.y
+}
+
 fn index_of(items: &[String], name: &str) -> Option<usize> {
     items.iter().position(|item| item == name)
 }
@@ -939,11 +1003,74 @@ fn read_dir_names(path: &Path) -> Vec<String> {
     names
 }
 
+/// Çoklu seçime izin veren liste; seçim değiştiyse `true` döner.
+///
+/// Kurallar dosya yöneticilerindekiyle aynı, çünkü kullanıcının bildiği bunlar:
+/// düz tıklama yalnız o öğeyi seçer, `Ctrl` ekler/çıkarır, `Shift` çıpadan
+/// buraya kadarki aralığı seçer.
+fn multi_select_list(
+    ui: &mut Ui,
+    id: &str,
+    items: &[String],
+    selected: &mut std::collections::BTreeSet<usize>,
+    anchor: &mut Option<usize>,
+) -> bool {
+    let row_height = list_row_height(ui);
+    let mut clicked = None;
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .inner_margin(4.0)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(id)
+                .auto_shrink([false, false])
+                .show_rows(ui, row_height, items.len(), |ui, range| {
+                    ui.set_min_width(ui.available_width());
+                    for index in range {
+                        if ui
+                            .selectable_label(selected.contains(&index), &items[index])
+                            .clicked()
+                        {
+                            clicked = Some(index);
+                        }
+                    }
+                });
+        });
+
+    let Some(index) = clicked else {
+        return false;
+    };
+    let before = selected.clone();
+    let modifiers = ui.input(|input| input.modifiers);
+
+    if modifiers.shift
+        && let Some(start) = *anchor
+    {
+        let (low, high) = if start <= index {
+            (start, index)
+        } else {
+            (index, start)
+        };
+        *selected = (low..=high).collect();
+    } else if modifiers.command {
+        // `command`: Windows/Linux'ta Ctrl, macOS'ta ⌘ — egui ikisini burada
+        // birleştiriyor ve kullanıcı kendi platformunun tuşunu bulmuş oluyor.
+        if !selected.remove(&index) {
+            selected.insert(index);
+        }
+        *anchor = Some(index);
+    } else {
+        selected.clear();
+        selected.insert(index);
+        *anchor = Some(index);
+    }
+
+    *selected != before
+}
+
 fn selectable_list(ui: &mut Ui, id: &str, items: &[String], selected: &mut Option<usize>) {
-    // Satır yüksekliği tema ve ölçekle değiştiği için sabit yazılmıyor.
-    let row_height = ui.text_style_height(&egui::TextStyle::Body)
-        + ui.spacing().button_padding.y * 2.0
-        + ui.spacing().item_spacing.y;
+    let row_height = list_row_height(ui);
 
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
