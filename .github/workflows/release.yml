@@ -19,8 +19,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ci.yml runs on pull requests only, so a direct push to main would otherwise
+  # reach a release without ever being linted. One cached ubuntu job keeps that
+  # gate in place; the test matrix below is the gate that blocks publishing.
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
   build:
     name: Build on ${{ matrix.os }}
+    needs: lint
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -45,7 +71,7 @@ jobs:
             release_name: 7DaysToBackup-rust-macos
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install system dependencies
         if: runner.os == 'Linux'
@@ -54,12 +80,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # The release is only worth publishing if it passes the same gates CI
       # runs; a push to main triggers both workflows independently.
       - name: Test
-        run: cargo test --all-features
+        run: cargo test
 
       - name: Build
         run: cargo build --release
@@ -71,7 +97,7 @@ jobs:
           cp "target/release/${{ matrix.asset }}" "out/${{ matrix.release_name }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.release_name }}
           path: out/${{ matrix.release_name }}
@@ -85,12 +111,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
 
@@ -116,7 +142,7 @@ jobs:
           fi
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           token: ${{ github.token }}
           tag_name: ${{ steps.tag.outputs.TAG_NAME }}

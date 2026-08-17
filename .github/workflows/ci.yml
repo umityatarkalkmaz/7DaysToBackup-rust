@@ -1,14 +1,14 @@
 name: CI
 
 on:
-  push:
-    branches: [ "main" ]
-    paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      # NOTE: negation ('!foo') is not honoured inside paths-ignore. The Python
-      # repo learned this the hard way — a '**.txt' entry with a
-      # '!requirements.txt' exception silently skipped every dependency bump.
+  # Pull requests only. A push to main triggers release.yml, which runs the same
+  # test matrix before it builds; having both on push meant six test jobs per
+  # push (three platforms x two workflows) for one commit.
+  #
+  # Deliberately NOT solved with `workflow_run`: that trigger runs in the base
+  # repository's context with write permissions, which is the well-known path to
+  # running untrusted code in a privileged context. Moving the trigger is not
+  # worth a new privilege surface when dropping a duplicate does the same job.
   pull_request:
     branches: [ "main" ]
 
@@ -24,7 +24,7 @@ jobs:
     name: Format and lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # eframe links against these; clippy --all-targets compiles the binary
       # target too, so they are needed even though no window is ever opened.
@@ -34,13 +34,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   test:
     name: Test on ${{ matrix.os }}
@@ -50,7 +50,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install system dependencies
         if: runner.os == 'Linux'
@@ -59,11 +59,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # Three platforms because paths.rs and platform.rs branch per OS. The
       # per-OS unit tests are host-independent by design (the Os enum is a
       # parameter), but the default-path helpers still read real environment
       # variables, and only the real runner proves those.
       - name: Test
-        run: cargo test --all-features
+        run: cargo test
