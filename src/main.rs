@@ -3,7 +3,7 @@
 
 use seven_days_to_backup::core::config::Config;
 use seven_days_to_backup::core::{log, paths};
-use seven_days_to_backup::ui::BackupApp;
+use seven_days_to_backup::ui::{BackupApp, theme};
 
 /// Ölçek 1.0'da açılış penceresi.
 const WINDOW: [f32; 2] = [900.0, 600.0];
@@ -25,11 +25,17 @@ fn main() -> eframe::Result {
     // pencere açıldıktan sonra gerçek ölçeği uyguluyor.
     let scale = config.ui_scale().unwrap_or(1.0);
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([WINDOW[0] * scale, WINDOW[1] * scale])
+        .with_min_inner_size(MIN_WINDOW)
+        .with_title("7 Days To Backup");
+    // İkon kozmetik: çözülemezse pencere ikonsuz açılır, uygulama düşmez.
+    if let Some(icon) = theme::icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([WINDOW[0] * scale, WINDOW[1] * scale])
-            .with_min_inner_size(MIN_WINDOW)
-            .with_title("7 Days To Backup"),
+        viewport,
         ..Default::default()
     };
 

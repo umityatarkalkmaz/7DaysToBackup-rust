@@ -69,6 +69,11 @@ jobs:
         # Windows does not have that problem, but the download is worth halving
         # all the same. zip rather than tar.gz: Explorer opens it on a
         # double-click without any extra tool.
+        #
+        # macOS ships a .app bundle, so double-clicking it launches the program
+        # instead of opening a Terminal window alongside it, and so it can carry
+        # an icon. Bundles are distributed as zip built with `ditto`, the
+        # platform's own tool for the job.
         include:
           - os: ubuntu-latest
             asset: seven-days-to-backup
@@ -81,7 +86,7 @@ jobs:
           - os: macos-latest
             asset: seven-days-to-backup
             binary_name: 7DaysToBackup
-            release_name: 7DaysToBackup-rust-macos.tar.gz
+            release_name: 7DaysToBackup-rust-macos.zip
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -108,41 +113,114 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out stage
-          cp "target/release/${{ matrix.asset }}" "stage/${{ matrix.binary_name }}"
-          if [ "${{ runner.os }}" = "Windows" ]; then
+
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            APP="stage/${{ matrix.binary_name }}.app"
+            mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+            cp "target/release/${{ matrix.asset }}" "$APP/Contents/MacOS/${{ matrix.binary_name }}"
+            chmod +x "$APP/Contents/MacOS/${{ matrix.binary_name }}"
+
+            # iconutil wants an .iconset of exactly these names. Each size is
+            # rendered from assets/icon.svg rather than downscaled from one
+            # bitmap, so the small ones stay crisp.
+            ICONSET=stage/AppIcon.iconset
+            mkdir -p "$ICONSET"
+            cp assets/icon-16.png   "$ICONSET/icon_16x16.png"
+            cp assets/icon-32.png   "$ICONSET/icon_16x16@2x.png"
+            cp assets/icon-32.png   "$ICONSET/icon_32x32.png"
+            cp assets/icon-64.png   "$ICONSET/icon_32x32@2x.png"
+            cp assets/icon-128.png  "$ICONSET/icon_128x128.png"
+            cp assets/icon-256.png  "$ICONSET/icon_128x128@2x.png"
+            cp assets/icon-256.png  "$ICONSET/icon_256x256.png"
+            cp assets/icon-512.png  "$ICONSET/icon_256x256@2x.png"
+            cp assets/icon-512.png  "$ICONSET/icon_512x512.png"
+            cp assets/icon-1024.png "$ICONSET/icon_512x512@2x.png"
+            iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+
+            VERSION=$(date +'%Y.%m.%d')
+            cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>${{ matrix.binary_name }}</string>
+            <key>CFBundleIdentifier</key><string>com.umityatarkalkmaz.7daystobackup</string>
+            <key>CFBundleName</key><string>7 Days To Backup</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+            # Apple Silicon refuses to run an unsigned binary at all. cargo's
+            # output carries the linker's ad-hoc signature, but assembling the
+            # bundle around it means the bundle itself must be signed too.
+            codesign --force --sign - "$APP"
+
+            # ditto rather than zip: it is the platform's own tool and carries
+            # bundle permissions and extended attributes correctly.
+            ditto -c -k --sequesterRsrc --keepParent "$APP" "out/${{ matrix.release_name }}"
+
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/release/${{ matrix.asset }}" "stage/${{ matrix.binary_name }}"
             # 7-Zip is bundled with the runner. Invoked from inside `stage` so
             # the entry lands at the archive root: given a path argument it
             # would store `stage/...` and the user would extract a folder.
             (cd stage && 7z a -tzip "../out/${{ matrix.release_name }}" "${{ matrix.binary_name }}")
+
           else
+            cp "target/release/${{ matrix.asset }}" "stage/${{ matrix.binary_name }}"
             # cargo already marks it executable; setting it explicitly means the
             # tarball is correct even if that ever stops being true.
             chmod +x "stage/${{ matrix.binary_name }}"
             tar -czf "out/${{ matrix.release_name }}" -C stage "${{ matrix.binary_name }}"
           fi
 
-      # Both checks guard failures that are silent at build time and only show
-      # up on a user's machine: a binary that will not start, or an archive that
-      # extracts a folder instead of a program.
+      # These guard failures that are silent at build time and only surface on a
+      # user's machine: a binary that will not start, an archive that extracts a
+      # folder instead of a program, or a bundle macOS refuses to open.
       - name: Verify the archive
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            entries=$(7z l -ba "out/${{ matrix.release_name }}" | awk '{print $NF}')
-            echo "entries: $entries"
-            if [ "$entries" != "${{ matrix.binary_name }}" ]; then
-              echo "::error::expected exactly '${{ matrix.binary_name }}' at the archive root, got: $entries"
-              exit 1
-            fi
-          else
-            mode=$(tar -tvzf "out/${{ matrix.release_name }}" | awk 'NR==1 {print $1}')
-            echo "mode: $mode"
-            case "$mode" in
-              *x*) ;;
-              *) echo "::error::archived binary is not executable ($mode)"; exit 1 ;;
-            esac
-          fi
+          case "${{ runner.os }}" in
+            Windows)
+              entries=$(7z l -ba "out/${{ matrix.release_name }}" | awk '{print $NF}')
+              echo "entries: $entries"
+              if [ "$entries" != "${{ matrix.binary_name }}" ]; then
+                echo "::error::expected exactly '${{ matrix.binary_name }}' at the archive root, got: $entries"
+                exit 1
+              fi
+              ;;
+            macOS)
+              # Unpack what the user will actually download, not the staging copy.
+              rm -rf check && mkdir check
+              ditto -x -k "out/${{ matrix.release_name }}" check
+              APP="check/${{ matrix.binary_name }}.app"
+              BIN="$APP/Contents/MacOS/${{ matrix.binary_name }}"
+              test -d "$APP"                             || { echo "::error::bundle missing"; exit 1; }
+              test -x "$BIN"                             || { echo "::error::bundle executable missing or not executable"; exit 1; }
+              test -f "$APP/Contents/Info.plist"         || { echo "::error::Info.plist missing"; exit 1; }
+              test -f "$APP/Contents/Resources/AppIcon.icns" || { echo "::error::icon missing"; exit 1; }
+              # Apple Silicon will not run unsigned code at all, so an invalid
+              # signature means an app that cannot open on any current Mac.
+              codesign --verify --strict --verbose=2 "$APP"
+              plutil -lint "$APP/Contents/Info.plist"
+              file "$BIN"
+              ;;
+            *)
+              mode=$(tar -tvzf "out/${{ matrix.release_name }}" | awk 'NR==1 {print $1}')
+              echo "mode: $mode"
+              case "$mode" in
+                *x*) ;;
+                *) echo "::error::archived binary is not executable ($mode)"; exit 1 ;;
+              esac
+              ;;
+          esac
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -201,4 +279,4 @@ jobs:
           files: |
             artifacts/7DaysToBackup-rust-linux.tar.gz/7DaysToBackup-rust-linux.tar.gz
             artifacts/7DaysToBackup-rust-windows.zip/7DaysToBackup-rust-windows.zip
-            artifacts/7DaysToBackup-rust-macos.tar.gz/7DaysToBackup-rust-macos.tar.gz
+            artifacts/7DaysToBackup-rust-macos.zip/7DaysToBackup-rust-macos.zip

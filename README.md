@@ -29,28 +29,29 @@ bölümünden platformunuza uygun dosyayı indirin:
 |---|---|
 | Windows | `7DaysToBackup-rust-windows.zip` |
 | Linux | `7DaysToBackup-rust-linux.tar.gz` |
-| macOS | `7DaysToBackup-rust-macos.tar.gz` |
+| macOS | `7DaysToBackup-rust-macos.zip` |
 
 **Windows:** zip'e çift tıklayıp içindeki `7DaysToBackup.exe`'yi çıkarın.
 
-**Linux ve macOS:** arşivi açın, sonra çalıştırın:
+**macOS:** zip'i açın, çıkan `7DaysToBackup.app`'i Uygulamalar klasörüne sürükleyin.
+İlk açışta **sağ tık → Aç** deyin (uygulama imzasız olduğu için çift tıklama
+reddedilir). Sürüm **yalnızca Apple Silicon (arm64)** içindir.
+
+**Linux:** arşivi açın, sonra çalıştırın:
 
 ```bash
-tar -xzf 7DaysToBackup-rust-linux.tar.gz   # ya da -macos.tar.gz
+tar -xzf 7DaysToBackup-rust-linux.tar.gz
 ./7DaysToBackup
 ```
-
-> macOS ikilisi **yalnızca Apple Silicon (arm64)** içindir; Intel Mac'lerde
-> çalışmaz.
 
 > Linux ve macOS ikilileri neden arşiv içinde: GitHub yayın varlıkları düz
 > dosyadır ve çalıştırma iznini taşımaz. Doğrudan indirilen uzantısız bir dosyayı
 > macOS metin belgesi sanıp TextEdit'te açıyordu. `tar` izni kaydettiği için
 > arşivden çıkan dosya doğrudan çalışır.
 
-> **macOS'ta "geliştirici doğrulanamadı" uyarısı:** uygulama imzalı değil.
-> Dosyaya sağ tıklayıp **Aç** deyin ve onaylayın, ya da terminalde
-> `xattr -d com.apple.quarantine 7DaysToBackup` çalıştırın.
+> **macOS'ta "geliştirici doğrulanamadı" uyarısı:** uygulama Apple tarafından
+> noterlenmiş değil (bu ücretli bir geliştirici hesabı gerektiriyor). Sağ tık →
+> **Aç** yeterli; inatçı bir uyarıda `xattr -cr 7DaysToBackup.app` çalıştırın.
 
 > EXE imzasız dağıtıldığı için bazı antivirüs programları uyarı verebilir. Bu,
 > uygulamanın güvensiz olduğu anlamına gelmez; endişeniz varsa aşağıdaki adımlarla
@@ -149,7 +150,17 @@ src/
 ├── task.rs      arka plan işlemleri (mpsc + AtomicBool)
 ├── i18n.rs      metinler
 └── ui/          egui katmanı — app, settings, theme
+assets/
+├── icon.svg     ikonun kaynağı — değiştirilecek yer burası
+└── icon-*.png   ondan üretilmiş boyutlar (pencere ikonu ve macOS .icns)
 ```
+
+İkon `assets/icon.svg`'den `resvg` ile rasterleştirilip depoya konur; üretim tek
+seferliktir, rasterleştirici depoda durmaz. Yeniden üretmek için SVG'yi herhangi
+bir SVG aracıyla 16/32/64/128/256/512/1024 boyutlarına verin.
+
+> Wayland'de pencere ikonu görünmez — protokol istemcinin ikon atamasına izin
+> vermiyor, orada bir `.desktop` dosyası gerekir. X11, Windows ve macOS'ta görünür.
 
 `core/` ve `task.rs` içinde `egui`/`eframe` importu yoktur; bu sayede iş mantığı
 ekransız test edilebilir. Python tarafında `core/` paketinin Qt'siz tutulmasıyla

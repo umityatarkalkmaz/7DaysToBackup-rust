@@ -2684,6 +2684,7 @@ dependencies = [
  "flexi_logger",
  "log",
  "open",
+ "png",
  "rfd",
  "serde",
  "serde_json",

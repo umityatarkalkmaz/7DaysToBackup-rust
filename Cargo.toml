@@ -45,6 +45,9 @@ filetime = "0.2.29"
 flexi_logger = "0.31.10"
 log = "0.4.33"
 open = "5.4.1"
+# Pencere ikonunu çözmek için. `IconData` ham RGBA istiyor; ham gömmek 256x256'da
+# 256 KB eder, PNG 24 KB. Saf Rust, küçük.
+png = "0.18.1"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

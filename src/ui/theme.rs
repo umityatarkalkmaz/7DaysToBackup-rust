@@ -68,6 +68,38 @@ pub fn fonts() -> FontDefinitions {
     fonts
 }
 
+/// Pencere ikonu; çözülemezse `None`.
+///
+/// `IconData` ham RGBA istiyor. PNG gömülüp açılışta çözülüyor çünkü 256x256 ham
+/// RGBA 256 KB tutar, aynı görüntünün PNG'si 24 KB.
+///
+/// Hata uygulamayı düşürmez: ikon kozmetiktir ve gömülü varlık bozuksa bunu
+/// öğrenmenin yeri açılış değil, testtir (bkz. `the_window_icon_decodes`).
+pub fn icon() -> Option<egui::IconData> {
+    const ENCODED: &[u8] = include_bytes!("../../assets/icon-256.png");
+
+    // `Cursor`: png 0.18'in çözücüsü `BufRead + Seek` istiyor, çıplak dilim
+    // yalnızca ilkini veriyor.
+    let source = std::io::Cursor::new(ENCODED);
+    let mut reader = png::Decoder::new(source).read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgba).ok()?;
+
+    // Varlık `assets/icon.svg`'den tiny-skia ile üretiliyor ve her zaman RGBA8.
+    // Yine de kontrol ediliyor: dönüştürülmüş bir PNG sessizce yanlış renklerle
+    // çizilmektense hiç çizilmesin.
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    rgba.truncate(info.buffer_size());
+
+    Some(egui::IconData {
+        rgba,
+        width: info.width,
+        height: info.height,
+    })
+}
+
 pub fn dark_visuals() -> Visuals {
     let mut visuals = Visuals::dark();
 
@@ -100,6 +132,17 @@ pub fn dark_visuals() -> Visuals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_icon_decodes() {
+        // Gömülü varlığın bozulduğunu açılışta değil burada öğrenelim: `icon()`
+        // hata halinde sessizce `None` dönüyor ve pencere ikonsuz açılıyor.
+        let icon = icon().expect("gömülü ikon çözülmeli");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        // Tümüyle saydam bir ikon "çözüldü ama boş" demek olurdu.
+        assert!(icon.rgba.iter().skip(3).step_by(4).any(|alpha| *alpha > 0));
+    }
 
     #[test]
     fn every_glyph_the_interface_uses_is_covered() {
